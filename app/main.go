@@ -26,10 +26,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go app.janitorLoop(ctx)
-	go app.gcLoop(ctx)
+	if cfg.AppMode == "gc-worker" {
+		_ = app.setGCActive(false)
+		go app.gcWorkerLoop(ctx)
+		app.logger.Info("registry gc worker started", "poll_interval", cfg.GCWorkerPollInterval.String())
+		<-ctx.Done()
+		return
+	}
+
 	go app.healthLoop(ctx)
 	go app.housekeepingLoop(ctx)
+	go app.janitorLoop(ctx)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddress(),

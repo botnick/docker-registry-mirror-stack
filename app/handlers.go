@@ -17,7 +17,8 @@ func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"status":         "ok",
 		"time":           nowRFC3339(),
-		"ui":             "/dashboard",
+		"mode":           a.cfg.AppMode,
+		"ui":             ternaryString(a.cfg.AppMode == "control", "/dashboard", ""),
 		"fallback_state": fallback.State,
 	})
 }
@@ -25,6 +26,11 @@ func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		a.writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !a.notificationAuthorized(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="registry notifications"`)
+		a.writeError(w, http.StatusUnauthorized, "notifications authentication failed")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
@@ -77,15 +83,19 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	maintenance, _ := a.getMaintenanceState(r.Context())
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"registry_url":                    a.cfg.RegistryURL,
-		"registry_container_name":         a.cfg.RegistryContainerName,
 		"registry_data_path":              a.cfg.RegistryDataPath,
 		"registry_config_path":            a.cfg.RegistryConfigPath,
+		"registry_binary_path":            a.cfg.RegistryBinaryPath,
 		"sqlite_path":                     a.cfg.SQLitePath,
 		"gc_request_flag":                 a.cfg.GCRequestFlag,
+		"gc_active_flag":                  a.cfg.GCActiveFlag,
+		"app_mode":                        a.cfg.AppMode,
 		"listen_host":                     a.cfg.ListenHost,
 		"listen_port":                     a.cfg.ListenPort,
 		"public_base_url":                 a.cfg.PublicBaseURL,
 		"cookie_secure":                   a.cfg.CookieSecure,
+		"allow_insecure_control":          a.cfg.AllowInsecureControl,
+		"trust_proxy_headers":             a.cfg.TrustProxyHeaders,
 		"session_ttl_hours":               int(a.cfg.SessionTTL.Hours()),
 		"session_refresh_minutes":         safeDurationMinutes(a.cfg.SessionRefreshInterval),
 		"bootstrap_username":              a.cfg.BootstrapUsername,
@@ -109,6 +119,8 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"job_retention_days":              a.cfg.JobRetentionDays,
 		"login_max_attempts":              a.cfg.LoginMaxAttempts,
 		"login_lock_minutes":              safeDurationMinutes(a.cfg.LoginLockDuration),
+		"notifications_username":          a.cfg.NotificationsUsername,
+		"gc_worker_poll_seconds":          int(a.cfg.GCWorkerPollInterval.Seconds()),
 		"maintenance":                     maintenance,
 	})
 }
@@ -356,7 +368,7 @@ func (a *App) handleRunJanitor(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, status, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusOK, result)
+	a.writeJSON(w, http.StatusAccepted, result)
 }
 
 func (a *App) handleRunGC(w http.ResponseWriter, r *http.Request) {

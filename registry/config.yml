@@ -13,13 +13,6 @@ proxy:
 compatibility:
   schema1:
     enabled: false
-notifications:
-  endpoints:
-    - name: control-webhook
-      url: http://control:8080/notifications
-      timeout: 1s
-      threshold: 5
-      backoff: 1s
 health:
   storagedriver:
     enabled: true

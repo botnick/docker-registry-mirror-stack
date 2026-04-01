@@ -363,50 +363,24 @@ func (a *App) recordEvent(ctx context.Context, raw json.RawMessage) error {
 	}
 
 	if repo != "" && digest != "" {
-		firstSeenAt := now
-		pinned := 0
-		explicitProtected := 0
-		useCount := int64(0)
-		row := tx.QueryRowContext(ctx, "SELECT pinned, explicit_protected, first_seen_at, use_count FROM artifacts WHERE repo = ? AND digest = ?", repo, digest)
-		switch err := row.Scan(&pinned, &explicitProtected, &firstSeenAt, &useCount); err {
-		case nil:
-		case sql.ErrNoRows:
-			firstSeenAt = now
-			pinned = 0
-			explicitProtected = 0
-			useCount = 0
+		switch action {
+		case "push", "mount":
+			if err := a.applyArtifactPushEvent(ctx, tx, repo, tag, digest, mediaType, event.Target.Length, now); err != nil {
+				return err
+			}
+		case "pull":
+			if err := a.applyArtifactPullEvent(ctx, tx, repo, tag, digest, now); err != nil {
+				return err
+			}
+		case "delete":
+			if err := a.applyArtifactDeleteEvent(ctx, tx, repo, digest, now); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("lookup artifact: %w", err)
-		}
-
-		var sizeValue any
-		if event.Target.Length > 0 {
-			sizeValue = event.Target.Length
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO artifacts (repo, tag, digest, media_type, size_bytes, first_seen_at, last_used_at, use_count, pinned, explicit_protected, deleted_at, delete_reason)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-			ON CONFLICT(repo, digest) DO UPDATE SET
-				tag = COALESCE(excluded.tag, artifacts.tag),
-				media_type = COALESCE(excluded.media_type, artifacts.media_type),
-				size_bytes = COALESCE(excluded.size_bytes, artifacts.size_bytes),
-				last_used_at = excluded.last_used_at,
-				use_count = artifacts.use_count + 1,
-				deleted_at = NULL,
-				delete_reason = NULL
-		`, repo, nullString(tag), digest, nullString(mediaType), sizeValue, firstSeenAt, now, useCount+1, pinned, explicitProtected); err != nil {
-			return fmt.Errorf("upsert artifact: %w", err)
-		}
-
-		if tag != "" {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO artifact_tags (repo, digest, tag, first_seen_at, last_seen_at)
-				VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT(repo, digest, tag) DO UPDATE SET
-					last_seen_at = excluded.last_seen_at
-			`, repo, digest, tag, now, now); err != nil {
-				return fmt.Errorf("upsert artifact tag: %w", err)
+			if tag != "" {
+				if err := a.upsertArtifactTag(ctx, tx, repo, digest, tag, now); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -416,11 +390,96 @@ func (a *App) recordEvent(ctx context.Context, raw json.RawMessage) error {
 	}
 
 	a.logSystem(ctx, "info", "webhook", "", "notification stored", map[string]any{
-		"repo":   repo,
-		"tag":    tag,
-		"digest": digest,
-		"action": action,
+		"repo":      repo,
+		"tag":       tag,
+		"digest":    digest,
+		"action":    action,
+		"event_id":  event.ID,
+		"actor":     event.Actor.Name,
+		"source_ip": event.Request.Addr,
 	})
+	return nil
+}
+
+func (a *App) applyArtifactPushEvent(ctx context.Context, tx *sql.Tx, repo, tag, digest, mediaType string, length int64, now string) error {
+	firstSeenAt := now
+	pinned := 0
+	explicitProtected := 0
+	useCount := int64(0)
+	row := tx.QueryRowContext(ctx, "SELECT pinned, explicit_protected, first_seen_at, use_count FROM artifacts WHERE repo = ? AND digest = ?", repo, digest)
+	switch err := row.Scan(&pinned, &explicitProtected, &firstSeenAt, &useCount); err {
+	case nil:
+	case sql.ErrNoRows:
+	default:
+		return fmt.Errorf("lookup artifact: %w", err)
+	}
+
+	var sizeValue any
+	if length > 0 {
+		sizeValue = length
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO artifacts (repo, tag, digest, media_type, size_bytes, first_seen_at, last_used_at, use_count, pinned, explicit_protected, deleted_at, delete_reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+		ON CONFLICT(repo, digest) DO UPDATE SET
+			tag = COALESCE(excluded.tag, artifacts.tag),
+			media_type = COALESCE(excluded.media_type, artifacts.media_type),
+			size_bytes = COALESCE(excluded.size_bytes, artifacts.size_bytes),
+			last_used_at = excluded.last_used_at,
+			use_count = artifacts.use_count + 1,
+			deleted_at = NULL,
+			delete_reason = NULL
+	`, repo, nullString(tag), digest, nullString(mediaType), sizeValue, firstSeenAt, now, useCount+1, pinned, explicitProtected); err != nil {
+		return fmt.Errorf("upsert artifact from push event: %w", err)
+	}
+
+	if tag != "" {
+		if err := a.upsertArtifactTag(ctx, tx, repo, digest, tag, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) applyArtifactPullEvent(ctx context.Context, tx *sql.Tx, repo, tag, digest, now string) error {
+	result, err := tx.ExecContext(ctx, `
+		UPDATE artifacts
+		SET last_used_at = ?, use_count = use_count + 1, tag = COALESCE(?, tag)
+		WHERE repo = ? AND digest = ? AND deleted_at IS NULL
+	`, now, nullString(tag), repo, digest)
+	if err != nil {
+		return fmt.Errorf("update artifact from pull event: %w", err)
+	}
+	affected, _ := result.RowsAffected()
+	if affected > 0 && tag != "" {
+		if err := a.upsertArtifactTag(ctx, tx, repo, digest, tag, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) applyArtifactDeleteEvent(ctx context.Context, tx *sql.Tx, repo, digest, now string) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE artifacts
+		SET deleted_at = COALESCE(deleted_at, ?), delete_reason = COALESCE(delete_reason, 'registry delete event')
+		WHERE repo = ? AND digest = ?
+	`, now, repo, digest); err != nil {
+		return fmt.Errorf("mark artifact deleted from event: %w", err)
+	}
+	return nil
+}
+
+func (a *App) upsertArtifactTag(ctx context.Context, tx *sql.Tx, repo, digest, tag, now string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO artifact_tags (repo, digest, tag, first_seen_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(repo, digest, tag) DO UPDATE SET
+			last_seen_at = excluded.last_seen_at
+	`, repo, digest, tag, now, now); err != nil {
+		return fmt.Errorf("upsert artifact tag: %w", err)
+	}
 	return nil
 }
 

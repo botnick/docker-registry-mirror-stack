@@ -16,16 +16,20 @@ const (
 )
 
 type Config struct {
+	AppMode                      string
 	RegistryURL                  string
-	RegistryContainerName        string
 	RegistryDataPath             string
 	RegistryConfigPath           string
+	RegistryBinaryPath           string
 	SQLitePath                   string
 	GCRequestFlag                string
+	GCActiveFlag                 string
 	ListenHost                   string
 	ListenPort                   int
 	PublicBaseURL                string
 	CookieSecure                 bool
+	AllowInsecureControl         bool
+	TrustProxyHeaders            bool
 	SessionSecret                string
 	SessionTTL                   time.Duration
 	SessionRefreshInterval       time.Duration
@@ -51,19 +55,26 @@ type Config struct {
 	JobRetentionDays             int
 	LoginMaxAttempts             int
 	LoginLockDuration            time.Duration
+	NotificationsUsername        string
+	NotificationsPassword        string
+	GCWorkerPollInterval         time.Duration
 }
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
+		AppMode:                      getEnv("APP_MODE", "control"),
 		RegistryURL:                  strings.TrimRight(getEnv("REGISTRY_URL", "http://registry:5000"), "/"),
-		RegistryContainerName:        getEnv("REGISTRY_CONTAINER_NAME", "registry-mirror"),
 		RegistryDataPath:             getEnv("REGISTRY_DATA_PATH", "/var/lib/registry"),
 		RegistryConfigPath:           getEnv("REGISTRY_CONFIG_PATH", "/etc/distribution/config.yml"),
+		RegistryBinaryPath:           getEnv("REGISTRY_BINARY_PATH", "/usr/local/bin/registry"),
 		SQLitePath:                   getEnv("SQLITE_PATH", "/data/metadata/registry_meta.db"),
 		GCRequestFlag:                getEnv("GC_REQUEST_FLAG", "/data/state/gc.requested"),
+		GCActiveFlag:                 getEnv("GC_ACTIVE_FLAG", "/data/state/gc.running"),
 		ListenHost:                   getEnv("LISTEN_HOST", "0.0.0.0"),
 		PublicBaseURL:                strings.TrimRight(getEnv("PUBLIC_BASE_URL", ""), "/"),
-		CookieSecure:                 parseBool(getEnv("COOKIE_SECURE", "false")),
+		CookieSecure:                 parseBool(getEnv("COOKIE_SECURE", "true")),
+		AllowInsecureControl:         parseBool(getEnv("ALLOW_INSECURE_CONTROL", "false")),
+		TrustProxyHeaders:            parseBool(getEnv("TRUST_PROXY_HEADERS", "true")),
 		SessionSecret:                strings.TrimSpace(os.Getenv("SESSION_SECRET")),
 		BootstrapUsername:            getEnv("CONTROL_BOOTSTRAP_USERNAME", "admin"),
 		BootstrapPassword:            os.Getenv("CONTROL_BOOTSTRAP_PASSWORD"),
@@ -72,6 +83,8 @@ func LoadConfig() (Config, error) {
 		ProtectedReposPattern:        getEnv("PROTECTED_REPOS_REGEX", ""),
 		ProtectedTagsPattern:         getEnv("PROTECTED_TAGS_REGEX", ""),
 		UpstreamURL:                  strings.TrimRight(getEnv("UPSTREAM_HEALTH_URL", "https://registry-1.docker.io/v2/"), "/"),
+		NotificationsUsername:        getEnv("NOTIFICATIONS_USERNAME", "registry-notify"),
+		NotificationsPassword:        strings.TrimSpace(os.Getenv("NOTIFICATIONS_PASSWORD")),
 	}
 
 	var err error
@@ -149,11 +162,23 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.LoginLockDuration = time.Duration(lockMinutes) * minute
 
+	gcWorkerPollSeconds, err := getEnvInt("GC_WORKER_POLL_SECONDS", 15)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.GCWorkerPollInterval = time.Duration(gcWorkerPollSeconds) * second
+
 	switch {
 	case cfg.SessionSecret == "":
 		return Config{}, fmt.Errorf("SESSION_SECRET is required")
+	case cfg.AppMode != "control" && cfg.AppMode != "gc-worker":
+		return Config{}, fmt.Errorf("APP_MODE must be control or gc-worker")
 	case cfg.ListenPort <= 0 || cfg.ListenPort > 65535:
 		return Config{}, fmt.Errorf("LISTEN_PORT must be between 1 and 65535")
+	case !cfg.AllowInsecureControl && !cfg.CookieSecure:
+		return Config{}, fmt.Errorf("COOKIE_SECURE=false requires ALLOW_INSECURE_CONTROL=true")
+	case cfg.PublicBaseURL != "" && !cfg.AllowInsecureControl && !strings.HasPrefix(strings.ToLower(cfg.PublicBaseURL), "https://"):
+		return Config{}, fmt.Errorf("PUBLIC_BASE_URL must use https unless ALLOW_INSECURE_CONTROL=true")
 	case cfg.LowWatermarkPct < 0 || cfg.LowWatermarkPct > 100:
 		return Config{}, fmt.Errorf("LOW_WATERMARK_PCT must be between 0 and 100")
 	case cfg.TargetFreePct < 0 || cfg.TargetFreePct > 100:
@@ -188,6 +213,12 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("EVENT_RETENTION_DAYS must be greater than 0")
 	case cfg.JobRetentionDays <= 0:
 		return Config{}, fmt.Errorf("JOB_RETENTION_DAYS must be greater than 0")
+	case cfg.NotificationsUsername == "":
+		return Config{}, fmt.Errorf("NOTIFICATIONS_USERNAME must not be empty")
+	case cfg.NotificationsPassword == "":
+		return Config{}, fmt.Errorf("NOTIFICATIONS_PASSWORD is required")
+	case cfg.GCWorkerPollInterval <= 0:
+		return Config{}, fmt.Errorf("GC_WORKER_POLL_SECONDS must be greater than 0")
 	}
 
 	return cfg, nil
@@ -202,6 +233,9 @@ func (c Config) EnsurePaths() error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(c.GCRequestFlag), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(c.GCActiveFlag), 0o755); err != nil {
 		return err
 	}
 	return nil

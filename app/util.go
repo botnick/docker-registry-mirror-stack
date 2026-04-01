@@ -129,6 +129,13 @@ func stringsHasPrefix(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix)
 }
 
+func ternaryString(condition bool, truthy, falsy string) string {
+	if condition {
+		return truthy
+	}
+	return falsy
+}
+
 func tokenString(bytesLength int) (string, error) {
 	buffer := make([]byte, bytesLength)
 	if _, err := rand.Read(buffer); err != nil {

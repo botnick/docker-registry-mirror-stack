@@ -376,10 +376,24 @@ func (a *App) sameOrigin(r *http.Request) bool {
 	if r.TLS != nil || a.cfg.CookieSecure {
 		scheme = "https"
 	}
-	if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
-		scheme = forwardedProto
+	host := r.Host
+	if a.cfg.TrustProxyHeaders {
+		if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+			scheme = forwardedProto
+		}
+		if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+			host = forwardedHost
+		}
 	}
-	return origin == scheme+"://"+r.Host
+	return origin == scheme+"://"+host
+}
+
+func (a *App) notificationAuthorized(r *http.Request) bool {
+	username, password, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	return username == a.cfg.NotificationsUsername && password == a.cfg.NotificationsPassword
 }
 
 func userLocked(user User) (string, bool) {

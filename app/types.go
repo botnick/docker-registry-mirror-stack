@@ -108,9 +108,12 @@ type NotificationEnvelope struct {
 }
 
 type NotificationEvent struct {
+	ID         string             `json:"id"`
 	Action     string             `json:"action"`
 	Repository string             `json:"repository"`
 	Target     NotificationTarget `json:"target"`
+	Request    NotificationSource `json:"request"`
+	Actor      NotificationActor  `json:"actor"`
 }
 
 type NotificationTarget struct {
@@ -119,6 +122,15 @@ type NotificationTarget struct {
 	Digest     string `json:"digest"`
 	MediaType  string `json:"mediaType"`
 	Length     int64  `json:"length"`
+}
+
+type NotificationSource struct {
+	Addr string `json:"addr"`
+	Host string `json:"host"`
+}
+
+type NotificationActor struct {
+	Name string `json:"name"`
 }
 
 type HealthProbe struct {
@@ -190,6 +202,8 @@ type JanitorResult struct {
 }
 
 type GCResult struct {
+	Queued        bool   `json:"queued,omitempty"`
+	RequestedAt   string `json:"requested_at,omitempty"`
 	TriggerSource string `json:"trigger_source"`
 	StartedAt     string `json:"started_at"`
 	FinishedAt    string `json:"finished_at"`

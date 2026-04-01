@@ -7,6 +7,11 @@ services:
       - "${REGISTRY_PORT:-5000}:5000"
     environment:
       REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_NAME: control-webhook
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_URL: http://${NOTIFICATIONS_USERNAME:-registry-notify}:${NOTIFICATIONS_PASSWORD}@control:8080/notifications
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_TIMEOUT: 1s
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_THRESHOLD: 5
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_BACKOFF: 1s
       TZ: UTC
     volumes:
       - registry_data:/var/lib/registry
@@ -26,18 +31,22 @@ services:
     depends_on:
       - registry
     ports:
-      - "${CONTROL_PORT:-8080}:8080"
+      - "${CONTROL_BIND_ADDRESS:-127.0.0.1}:${CONTROL_PORT:-8080}:8080"
     environment:
+      APP_MODE: control
       REGISTRY_URL: http://registry:5000
-      REGISTRY_CONTAINER_NAME: registry-mirror
       REGISTRY_DATA_PATH: /var/lib/registry
       REGISTRY_CONFIG_PATH: /etc/distribution/config.yml
+      REGISTRY_BINARY_PATH: /usr/local/bin/registry
       SQLITE_PATH: /data/metadata/registry_meta.db
       GC_REQUEST_FLAG: /data/state/gc.requested
+      GC_ACTIVE_FLAG: /data/state/gc.running
       LISTEN_HOST: 0.0.0.0
       LISTEN_PORT: "8080"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ALLOW_INSECURE_CONTROL: ${ALLOW_INSECURE_CONTROL:-false}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       SESSION_SECRET: ${SESSION_SECRET}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
       SESSION_REFRESH_MINUTES: ${SESSION_REFRESH_MINUTES:-15}
@@ -63,19 +72,78 @@ services:
       JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-90}
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
       LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      NOTIFICATIONS_USERNAME: ${NOTIFICATIONS_USERNAME:-registry-notify}
+      NOTIFICATIONS_PASSWORD: ${NOTIFICATIONS_PASSWORD}
+      GC_WORKER_POLL_SECONDS: ${GC_WORKER_POLL_SECONDS:-15}
       TZ: UTC
     volumes:
       - registry_data:/var/lib/registry
       - ./registry/config.yml:/etc/distribution/config.yml:ro
       - ./metadata:/data/metadata
       - ./state:/data/state
-      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  gc-worker:
+    build:
+      context: ./app
+    container_name: registry-gc-worker
+    restart: unless-stopped
+    depends_on:
+      - registry
+    environment:
+      APP_MODE: gc-worker
+      REGISTRY_URL: http://registry:5000
+      REGISTRY_DATA_PATH: /var/lib/registry
+      REGISTRY_CONFIG_PATH: /etc/distribution/config.yml
+      REGISTRY_BINARY_PATH: /usr/local/bin/registry
+      SQLITE_PATH: /data/metadata/registry_meta.db
+      GC_REQUEST_FLAG: /data/state/gc.requested
+      GC_ACTIVE_FLAG: /data/state/gc.running
+      LISTEN_HOST: 127.0.0.1
+      LISTEN_PORT: "8080"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ALLOW_INSECURE_CONTROL: ${ALLOW_INSECURE_CONTROL:-false}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      SESSION_REFRESH_MINUTES: ${SESSION_REFRESH_MINUTES:-15}
+      CONTROL_BOOTSTRAP_USERNAME: ${CONTROL_BOOTSTRAP_USERNAME:-admin}
+      CONTROL_BOOTSTRAP_PASSWORD: ${CONTROL_BOOTSTRAP_PASSWORD:-}
+      CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE: ${CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE:-false}
+      DRY_RUN: ${DRY_RUN:-false}
+      JANITOR_INTERVAL_SECONDS: ${JANITOR_INTERVAL_SECONDS:-3600}
+      MAX_DELETE_BATCH: ${MAX_DELETE_BATCH:-20}
+      UNUSED_DAYS: ${UNUSED_DAYS:-30}
+      MIN_CACHE_AGE_DAYS: ${MIN_CACHE_AGE_DAYS:-3}
+      LOW_WATERMARK_PCT: ${LOW_WATERMARK_PCT:-20}
+      TARGET_FREE_PCT: ${TARGET_FREE_PCT:-35}
+      EMERGENCY_FREE_PCT: ${EMERGENCY_FREE_PCT:-10}
+      GC_HOUR_UTC: ${GC_HOUR_UTC:-19}
+      PROTECTED_REPOS_REGEX: ${PROTECTED_REPOS_REGEX:-^(library/)?(alpine|ubuntu|busybox|debian)$}
+      PROTECTED_TAGS_REGEX: ${PROTECTED_TAGS_REGEX:-^(latest|stable|lts)$}
+      UPSTREAM_HEALTH_URL: ${UPSTREAM_HEALTH_URL:-https://registry-1.docker.io/v2/}
+      HEALTH_CHECK_INTERVAL_SECONDS: ${HEALTH_CHECK_INTERVAL_SECONDS:-60}
+      UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-6}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
+      EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-30}
+      JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-90}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      NOTIFICATIONS_USERNAME: ${NOTIFICATIONS_USERNAME:-registry-notify}
+      NOTIFICATIONS_PASSWORD: ${NOTIFICATIONS_PASSWORD}
+      GC_WORKER_POLL_SECONDS: ${GC_WORKER_POLL_SECONDS:-15}
+      TZ: UTC
+    volumes:
+      - registry_data:/var/lib/registry
+      - ./registry/config.yml:/etc/distribution/config.yml:ro
+      - ./metadata:/data/metadata
+      - ./state:/data/state
 
 volumes:
   registry_data:

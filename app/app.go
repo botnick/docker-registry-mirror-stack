@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/client"
 	_ "modernc.org/sqlite"
 )
 
@@ -31,10 +30,6 @@ type App struct {
 
 	protectedRepos *regexp.Regexp
 	protectedTags  *regexp.Regexp
-
-	dockerOnce sync.Once
-	docker     *client.Client
-	dockerErr  error
 
 	opMu           sync.Mutex
 	janitorRunning bool
@@ -112,6 +107,7 @@ func NewApp(cfg Config, logger *slog.Logger) (*App, error) {
 	_, _ = app.refreshFallbackStatus(context.Background())
 
 	app.logSystem(context.Background(), "info", "startup", "", "control service started", map[string]any{
+		"mode":         cfg.AppMode,
 		"listen":       cfg.ListenAddress(),
 		"registry_url": cfg.RegistryURL,
 		"go_version":   runtime.Version(),
@@ -291,12 +287,16 @@ func (a *App) routes() http.Handler {
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assets))))
 
 	mux.HandleFunc("/healthz", a.handleHealthz)
-	mux.HandleFunc("/notifications", a.handleNotifications)
-	mux.HandleFunc("/login", a.handleLoginPage)
-	mux.HandleFunc("/auth/login", a.handleLogin)
+	if a.cfg.AppMode == "control" {
+		mux.HandleFunc("/notifications", a.handleNotifications)
+		mux.HandleFunc("/login", a.handleLoginPage)
+		mux.HandleFunc("/auth/login", a.handleLogin)
+	}
 
-	protected := a.authMiddleware(http.HandlerFunc(a.handleProtectedRoutes))
-	mux.Handle("/", protected)
+	if a.cfg.AppMode == "control" {
+		protected := a.authMiddleware(http.HandlerFunc(a.handleProtectedRoutes))
+		mux.Handle("/", protected)
+	}
 
 	return a.loggingMiddleware(mux)
 }

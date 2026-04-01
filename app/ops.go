@@ -8,14 +8,19 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 	"time"
-
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 )
 
-var errOperationBusy = errors.New("มี maintenance operation อื่นกำลังทำงานอยู่")
+var errOperationBusy = errors.New("another maintenance operation is already running")
+
+type GCRequest struct {
+	TriggerSource string `json:"trigger_source"`
+	RequestedAt   string `json:"requested_at"`
+	Force         bool   `json:"force"`
+}
 
 func (a *App) buildOverview(ctx context.Context) (map[string]any, error) {
 	fallback, _ := a.refreshFallbackStatus(ctx)
@@ -59,6 +64,7 @@ func (a *App) buildOverview(ctx context.Context) (map[string]any, error) {
 			"go_version": runtime.Version(),
 			"go_os":      runtime.GOOS,
 			"go_arch":    runtime.GOARCH,
+			"app_mode":   a.cfg.AppMode,
 		},
 		"registry":    fallback.Registry,
 		"upstream":    fallback.Upstream,
@@ -71,7 +77,12 @@ func (a *App) buildOverview(ctx context.Context) (map[string]any, error) {
 		"counts":      map[string]any{"active_artifacts": activeCount, "deleted_artifacts": deletedCount, "pinned_artifacts": pinnedCount, "explicit_protected_artifacts": protectedCount, "events_total": eventCount, "logs_total": logCount, "eligible_candidates": len(candidates)},
 		"last_runs":   map[string]any{"janitor": lastJanitor, "gc": lastGC},
 		"public_base": a.cfg.PublicBaseURL,
-		"security":    map[string]any{"cookie_secure": a.cfg.CookieSecure, "session_ttl_hours": int(a.cfg.SessionTTL.Hours())},
+		"security": map[string]any{
+			"cookie_secure":          a.cfg.CookieSecure,
+			"session_ttl_hours":      int(a.cfg.SessionTTL.Hours()),
+			"notifications_username": a.cfg.NotificationsUsername,
+			"trust_proxy_headers":    a.cfg.TrustProxyHeaders,
+		},
 	}, nil
 }
 
@@ -123,6 +134,7 @@ func (a *App) policySnapshot() map[string]any {
 		"target_free_pct":           a.cfg.TargetFreePct,
 		"emergency_free_pct":        a.cfg.EmergencyFreePct,
 		"gc_hour_utc":               a.cfg.GCHourUTC,
+		"gc_worker_poll_seconds":    int(a.cfg.GCWorkerPollInterval.Seconds()),
 		"protected_repos_regex":     a.cfg.ProtectedReposPattern,
 		"protected_tags_regex":      a.cfg.ProtectedTagsPattern,
 		"health_check_interval_sec": int(a.cfg.HealthCheckInterval.Seconds()),
@@ -158,35 +170,35 @@ func (a *App) refreshFallbackStatus(ctx context.Context) (FallbackStatus, error)
 	}
 
 	state := "normal"
-	summary := "พร้อมใช้งาน"
-	details := "mirror และ upstream ตอบสนองตามปกติ"
+	summary := "ready"
+	details := "mirror and upstream are reachable"
 	cachedModeUsable := registryProbe.Healthy
 	destructivePaused := false
 
 	switch {
 	case maintenance.MaintenanceMode || signals["gc_running"]:
 		state = "maintenance"
-		summary = "อยู่ใน maintenance"
-		details = "ระบบกำลังหยุดงานอัตโนมัติหรือกำลังทำ GC จึงอาจมีช่วงที่ mirror ให้บริการไม่ต่อเนื่อง"
+		summary = "maintenance mode active"
+		details = "destructive operations are paused while maintenance or GC is active"
 		destructivePaused = true
 	case !registryProbe.Healthy:
 		state = "mirror-degraded"
-		summary = "mirror ตอบสนองผิดปกติ"
-		details = "ตัว mirror ไม่พร้อมหรือเข้าถึงไม่ได้ ควรตรวจ container registry ทันที"
+		summary = "registry mirror is unhealthy"
+		details = "check the registry service before continuing with cleanup or GC"
 		destructivePaused = true
 	case !upstreamProbe.Healthy:
 		state = "upstream-degraded"
-		summary = "origin ตอบสนองช้าหรือเข้าไม่ถึง"
-		details = "รายการที่ cache ไว้แล้วยังมีโอกาสใช้งานได้ แต่ image ใหม่หรือ cache miss อาจล้มเหลว ระบบจึงพักงานลบอัตโนมัติไว้ก่อน"
+		summary = "upstream registry is degraded"
+		details = "cached artifacts can still be served, but cache misses may fail"
 		destructivePaused = true
 	case storageBool(storage, "emergency"):
 		state = "storage-emergency"
-		summary = "พื้นที่ใกล้เต็มมาก"
-		details = "ดิสก์ต่ำกว่าระดับฉุกเฉิน ควรรีบตรวจ cleanup candidates และการขยายพื้นที่"
+		summary = "storage is critically low"
+		details = "review cleanup candidates or extend capacity immediately"
 	case storageBool(storage, "pressure"):
 		state = "storage-pressure"
-		summary = "พื้นที่เริ่มตึง"
-		details = "ดิสก์ต่ำกว่า low watermark ระบบจะเตรียม cleanup แบบระมัดระวัง"
+		summary = "storage is below the low watermark"
+		details = "cleanup should be reviewed soon"
 	}
 
 	if maintenance.JanitorPaused || maintenance.GCPaused {
@@ -241,10 +253,7 @@ func (a *App) currentFallbackStatus() FallbackStatus {
 
 func (a *App) probeHTTP(ctx context.Context, name, url string, timeout time.Duration) HealthProbe {
 	started := time.Now()
-	probe := HealthProbe{
-		Name:        name,
-		LastCheckAt: nowRFC3339(),
-	}
+	probe := HealthProbe{Name: name, LastCheckAt: nowRFC3339()}
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -319,26 +328,26 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 
 	if maintenance.MaintenanceMode && !force {
 		result.Skipped = true
-		result.SkipReason = "ระบบอยู่ใน maintenance mode"
+		result.SkipReason = "maintenance mode is active"
 		result.FinishedAt = nowRFC3339()
 		return a.finishJanitorJob(context.Background(), jobID, result, "skipped")
 	}
 	if maintenance.JanitorPaused && !force {
 		result.Skipped = true
-		result.SkipReason = "operator สั่ง pause janitor ไว้"
+		result.SkipReason = "janitor is paused"
 		result.FinishedAt = nowRFC3339()
 		return a.finishJanitorJob(context.Background(), jobID, result, "skipped")
 	}
 	if fallback.State == "mirror-degraded" && !force {
 		result.Skipped = true
-		result.SkipReason = "mirror ยังไม่พร้อม จึงไม่ลบข้อมูลอัตโนมัติ"
+		result.SkipReason = "registry mirror is degraded"
 		result.FinishedAt = nowRFC3339()
 		return a.finishJanitorJob(context.Background(), jobID, result, "skipped")
 	}
 
 	diskBefore, err := getDiskStats(a.cfg.RegistryDataPath)
 	if err != nil {
-		return fail(fmt.Errorf("อ่านพื้นที่ดิสก์ไม่สำเร็จ: %w", err))
+		return fail(fmt.Errorf("read disk stats failed: %w", err))
 	}
 	result.FreePctBefore = roundFloat(diskBefore.FreePercent)
 	result.MustFree = diskBefore.FreePercent < float64(a.cfg.LowWatermarkPct)
@@ -349,7 +358,7 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 
 	if fallback.State == "upstream-degraded" && !result.EmergencyMode && !force {
 		result.Skipped = true
-		result.SkipReason = "upstream มีปัญหา ระบบจึงพัก cleanup อัตโนมัติเพื่อเก็บ cache ไว้ใช้งาน"
+		result.SkipReason = "upstream is degraded and cleanup is paused to preserve cache"
 		result.FinishedAt = nowRFC3339()
 		return a.finishJanitorJob(context.Background(), jobID, result, "skipped")
 	}
@@ -409,7 +418,7 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 
 	result.EstimatedRecoveredBytes = recoveredEstimate
 	if !result.DryRun && result.DeletedCount > 0 {
-		if err := a.requestGC(); err == nil {
+		if _, err := a.requestGC(trigger, false); err == nil {
 			result.GCRequested = true
 		}
 	}
@@ -488,10 +497,34 @@ func (a *App) markDeleted(ctx context.Context, repo, digest, reason string) erro
 }
 
 func (a *App) runGC(ctx context.Context, trigger string, force bool) (GCResult, error) {
+	request, err := a.requestGC(trigger, force)
+	if err != nil {
+		return GCResult{}, err
+	}
+	result := GCResult{
+		Queued:        true,
+		RequestedAt:   request.RequestedAt,
+		TriggerSource: request.TriggerSource,
+		Forced:        request.Force,
+		GCPending:     true,
+	}
+	a.logSystem(ctx, "info", "gc", "", "gc requested", map[string]any{
+		"trigger":      trigger,
+		"force":        force,
+		"requested_at": request.RequestedAt,
+	})
+	return result, nil
+}
+
+func (a *App) executeGC(ctx context.Context, trigger string, force bool) (GCResult, error) {
 	if err := a.beginOperation("gc"); err != nil {
 		return GCResult{}, err
 	}
 	defer a.endOperation("gc")
+	_ = a.setGCActive(true)
+	defer func() {
+		_ = a.setGCActive(false)
+	}()
 
 	startedAt := nowRFC3339()
 	jobID, err := a.createJobRun(ctx, "gc", trigger, startedAt)
@@ -525,122 +558,51 @@ func (a *App) runGC(ctx context.Context, trigger string, force bool) (GCResult, 
 	maintenance, _ := a.getMaintenanceState(ctx)
 	if maintenance.MaintenanceMode && !force {
 		result.Skipped = true
-		result.SkipReason = "ระบบอยู่ใน maintenance mode"
+		result.SkipReason = "maintenance mode is active"
 		result.FinishedAt = nowRFC3339()
 		return a.finishGCJob(context.Background(), jobID, result, "skipped")
 	}
 	if maintenance.GCPaused && !force {
 		result.Skipped = true
-		result.SkipReason = "operator สั่ง pause GC ไว้"
+		result.SkipReason = "gc is paused"
 		result.FinishedAt = nowRFC3339()
 		return a.finishGCJob(context.Background(), jobID, result, "skipped")
 	}
 	if fallback.State == "upstream-degraded" && !force {
 		result.Skipped = true
-		result.SkipReason = "upstream มีปัญหา จึงเลื่อน GC อัตโนมัติไว้ก่อนเพื่อลด downtime"
+		result.SkipReason = "upstream is degraded"
 		result.FinishedAt = nowRFC3339()
 		return a.finishGCJob(context.Background(), jobID, result, "skipped")
 	}
 	if !result.GCPending && !force {
 		result.Skipped = true
-		result.SkipReason = "ยังไม่มีคิว GC ที่รออยู่"
+		result.SkipReason = "no gc request is pending"
 		result.FinishedAt = nowRFC3339()
 		return a.finishGCJob(context.Background(), jobID, result, "skipped")
 	}
 
-	dockerClient, err := a.dockerClient()
-	if err != nil {
-		return fail(fmt.Errorf("docker client ใช้งานไม่ได้: %w", err))
-	}
-
-	inspect, err := dockerClient.ContainerInspect(ctx, a.cfg.RegistryContainerName)
-	if err != nil {
-		return fail(fmt.Errorf("หา registry container ไม่เจอ: %w", err))
-	}
-	imageName := inspect.Config.Image
-	if imageName == "" {
-		imageName = "registry:2.8.3"
-	}
-	result.RegistryImage = imageName
-
-	timeout := 30
-	if err := dockerClient.ContainerStop(ctx, a.cfg.RegistryContainerName, container.StopOptions{Timeout: &timeout}); err != nil {
-		return fail(fmt.Errorf("หยุด registry ไม่สำเร็จ: %w", err))
-	}
-
-	registryStopped := true
-	startRegistry := func() error {
-		if !registryStopped {
-			return nil
-		}
-		if err := dockerClient.ContainerStart(context.Background(), a.cfg.RegistryContainerName, container.StartOptions{}); err != nil {
-			return err
-		}
-		registryStopped = false
-		return nil
-	}
-	var startBackErr error
-	defer func() {
-		if err := startRegistry(); err != nil {
-			startBackErr = err
-		}
-	}()
-
-	name := fmt.Sprintf("registry-gc-%d", time.Now().UTC().Unix())
-	createResp, err := dockerClient.ContainerCreate(ctx, &container.Config{
-		Image: imageName,
-		Cmd:   []string{"garbage-collect", a.cfg.RegistryConfigPath},
-	}, &container.HostConfig{
-		VolumesFrom: []string{a.cfg.RegistryContainerName},
-	}, nil, nil, name)
-	if err != nil {
-		return fail(fmt.Errorf("สร้าง container GC ไม่สำเร็จ: %w", err))
-	}
-	gcID := createResp.ID
-	defer func() {
-		_ = dockerClient.ContainerRemove(context.Background(), gcID, container.RemoveOptions{Force: true})
-	}()
-
-	if err := dockerClient.ContainerStart(ctx, gcID, container.StartOptions{}); err != nil {
-		return fail(fmt.Errorf("เริ่ม container GC ไม่สำเร็จ: %w", err))
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, hour)
-	defer cancel()
-	waitCh, errCh := dockerClient.ContainerWait(waitCtx, gcID, container.WaitConditionNotRunning)
-	select {
-	case waitErr := <-errCh:
-		if waitErr != nil {
-			return fail(fmt.Errorf("รอ GC ไม่สำเร็จ: %w", waitErr))
-		}
-	case waitResult := <-waitCh:
-		result.StatusCode = int(waitResult.StatusCode)
-	}
-
-	logReader, err := dockerClient.ContainerLogs(ctx, gcID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
-	if err == nil {
-		defer logReader.Close()
-		logs, _ := io.ReadAll(logReader)
-		result.LogsTail = trimTail(string(logs), maxLogTailBytes)
-	}
-	if startBackErr != nil {
-		return fail(fmt.Errorf("start registry กลับไม่สำเร็จ: %w", startBackErr))
-	}
-
+	cmd := exec.CommandContext(ctx, a.cfg.RegistryBinaryPath, "garbage-collect", a.cfg.RegistryConfigPath)
+	output, execErr := cmd.CombinedOutput()
+	result.RegistryImage = "local-registry-binary"
+	result.LogsTail = trimTail(string(output), maxLogTailBytes)
 	result.FinishedAt = nowRFC3339()
-	if result.StatusCode == 0 && a.gcRequested() {
-		if err := os.Remove(a.cfg.GCRequestFlag); err == nil || errors.Is(err, os.ErrNotExist) {
-			result.GCPending = false
-			result.GCFlagCleared = true
+	if execErr != nil {
+		if exitErr, ok := execErr.(*exec.ExitError); ok {
+			result.StatusCode = exitErr.ExitCode()
+		} else {
+			result.StatusCode = 1
 		}
+		return fail(fmt.Errorf("registry garbage-collect failed: %w", execErr))
 	}
 
-	status := "success"
-	if result.StatusCode != 0 {
-		status = "error"
+	result.StatusCode = 0
+	if err := a.clearGCRequest(); err == nil {
+		result.GCPending = false
+		result.GCFlagCleared = true
 	}
+
 	details, _ := json.Marshal(result)
-	if err := a.finishJobRun(context.Background(), jobID, status, result.FinishedAt, details); err != nil {
+	if err := a.finishJobRun(context.Background(), jobID, "success", result.FinishedAt, details); err != nil {
 		return result, err
 	}
 	a.logSystem(context.Background(), "info", "gc", "", "gc completed", map[string]any{
@@ -648,11 +610,7 @@ func (a *App) runGC(ctx context.Context, trigger string, force bool) (GCResult, 
 		"forced":          force,
 		"status_code":     result.StatusCode,
 		"gc_flag_cleared": result.GCFlagCleared,
-		"registry_image":  result.RegistryImage,
 	})
-	if result.StatusCode != 0 {
-		return result, fmt.Errorf("registry garbage-collect จบด้วย status code %d", result.StatusCode)
-	}
 	return result, nil
 }
 
@@ -683,14 +641,26 @@ func (a *App) janitorLoop(ctx context.Context) {
 	}
 }
 
-func (a *App) gcLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * minute)
+func (a *App) gcWorkerLoop(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.GCWorkerPollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			request, ok, err := a.readGCRequest()
+			if err != nil {
+				a.logger.Error("gc request read failed", "error", err)
+				continue
+			}
+			if ok {
+				if _, err := a.executeGC(context.Background(), request.TriggerSource, request.Force); err != nil && !errors.Is(err, errOperationBusy) {
+					a.logger.Error("requested gc failed", "error", err)
+				}
+				continue
+			}
+
 			now := time.Now().UTC()
 			if !a.gcRequested() || now.Hour() < a.cfg.GCHourUTC {
 				continue
@@ -699,7 +669,7 @@ func (a *App) gcLoop(ctx context.Context) {
 			if err != nil || alreadyRun {
 				continue
 			}
-			if _, err := a.runGC(context.Background(), "scheduled", false); err != nil && !errors.Is(err, errOperationBusy) {
+			if _, err := a.executeGC(context.Background(), "scheduled", false); err != nil && !errors.Is(err, errOperationBusy) {
 				a.logger.Error("scheduled gc failed", "error", err)
 			}
 		}
@@ -737,8 +707,45 @@ func (a *App) housekeepingLoop(ctx context.Context) {
 	}
 }
 
-func (a *App) requestGC() error {
-	return os.WriteFile(a.cfg.GCRequestFlag, []byte(nowRFC3339()), 0o644)
+func (a *App) requestGC(trigger string, force bool) (GCRequest, error) {
+	request := GCRequest{
+		TriggerSource: firstNonEmpty(trigger, "manual"),
+		RequestedAt:   nowRFC3339(),
+		Force:         force,
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return GCRequest{}, err
+	}
+	return request, os.WriteFile(a.cfg.GCRequestFlag, payload, 0o600)
+}
+
+func (a *App) readGCRequest() (GCRequest, bool, error) {
+	data, err := os.ReadFile(a.cfg.GCRequestFlag)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return GCRequest{}, false, nil
+		}
+		return GCRequest{}, false, err
+	}
+	if len(data) == 0 {
+		return GCRequest{TriggerSource: "manual", RequestedAt: nowRFC3339()}, true, nil
+	}
+
+	var request GCRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		request = GCRequest{
+			TriggerSource: "legacy",
+			RequestedAt:   strings.TrimSpace(string(data)),
+		}
+	}
+	if request.TriggerSource == "" {
+		request.TriggerSource = "manual"
+	}
+	if request.RequestedAt == "" {
+		request.RequestedAt = nowRFC3339()
+	}
+	return request, true, nil
 }
 
 func (a *App) gcRequested() bool {
@@ -753,11 +760,19 @@ func (a *App) clearGCRequest() error {
 	return nil
 }
 
-func (a *App) dockerClient() (*client.Client, error) {
-	a.dockerOnce.Do(func() {
-		a.docker, a.dockerErr = client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	})
-	return a.docker, a.dockerErr
+func (a *App) setGCActive(active bool) error {
+	if active {
+		return os.WriteFile(a.cfg.GCActiveFlag, []byte(nowRFC3339()), 0o600)
+	}
+	if err := os.Remove(a.cfg.GCActiveFlag); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (a *App) gcActive() bool {
+	_, err := os.Stat(a.cfg.GCActiveFlag)
+	return err == nil
 }
 
 func (a *App) beginOperation(kind string) error {
@@ -791,7 +806,7 @@ func (a *App) operationSnapshot() map[string]bool {
 	defer a.opMu.Unlock()
 	return map[string]bool{
 		"janitor_running": a.janitorRunning,
-		"gc_running":      a.gcRunning,
+		"gc_running":      a.gcRunning || a.gcActive(),
 	}
 }
 

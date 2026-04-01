@@ -508,18 +508,28 @@ prepare_runtime() {
     set_env_value SESSION_SECRET "$(rand_string 48)"
   fi
 
-  if [[ -z "$(read_env_value CONTROL_BOOTSTRAP_USERNAME)" ]]; then
-    set_env_value CONTROL_BOOTSTRAP_USERNAME "admin"
+  if [[ -z "$(read_env_value NOTIFICATIONS_PASSWORD)" || "$(read_env_value NOTIFICATIONS_PASSWORD)" == "CHANGE_ME" ]]; then
+    set_env_value NOTIFICATIONS_PASSWORD "$(rand_string 32)"
   fi
 
-  if [[ -z "$(read_env_value PUBLIC_BASE_URL)" ]]; then
-    local ip port
-    ip="$(detect_server_ip || true)"
-    port="$(read_env_value CONTROL_PORT)"
-    port="${port:-8080}"
-    if [[ -n "$ip" ]]; then
-      set_env_value PUBLIC_BASE_URL "http://${ip}:${port}"
-    fi
+  if [[ -z "$(read_env_value CONTROL_BIND_ADDRESS)" ]]; then
+    set_env_value CONTROL_BIND_ADDRESS "127.0.0.1"
+  fi
+
+  if [[ -z "$(read_env_value COOKIE_SECURE)" ]]; then
+    set_env_value COOKIE_SECURE "true"
+  fi
+
+  if [[ -z "$(read_env_value ALLOW_INSECURE_CONTROL)" ]]; then
+    set_env_value ALLOW_INSECURE_CONTROL "false"
+  fi
+
+  if [[ -z "$(read_env_value TRUST_PROXY_HEADERS)" ]]; then
+    set_env_value TRUST_PROXY_HEADERS "true"
+  fi
+
+  if [[ -z "$(read_env_value CONTROL_BOOTSTRAP_USERNAME)" ]]; then
+    set_env_value CONTROL_BOOTSTRAP_USERNAME "admin"
   fi
 }
 
@@ -547,14 +557,16 @@ start_stack() {
 }
 
 print_summary() {
-  local control_port registry_port public_base_url health_url healthy restart_hint
+  local control_port registry_port public_base_url health_url healthy restart_hint control_bind
   control_port="$(read_env_value CONTROL_PORT)"
   registry_port="$(read_env_value REGISTRY_PORT)"
   public_base_url="$(read_env_value PUBLIC_BASE_URL)"
+  control_bind="$(read_env_value CONTROL_BIND_ADDRESS)"
   restart_hint="$(docker_restart_hint)"
   control_port="${control_port:-8080}"
   registry_port="${registry_port:-5000}"
-  public_base_url="${public_base_url:-http://YOUR_SERVER_IP:${control_port}}"
+  control_bind="${control_bind:-127.0.0.1}"
+  public_base_url="${public_base_url:-https://YOUR_CONTROL_HOSTNAME}"
   health_url="http://127.0.0.1:${control_port}/healthz"
   healthy="false"
 
@@ -583,7 +595,10 @@ Compose command:
 Registry mirror:
   http://YOUR_SERVER_IP:${registry_port}
 
-Web UI / API:
+Control bind:
+  ${control_bind}:${control_port}
+
+Web UI / API behind reverse proxy:
   ${public_base_url}/login
 
 Health check:
@@ -593,6 +608,7 @@ Useful commands:
   cd ${ROOT_DIR}
   sudo ${COMPOSE_COMMAND_LABEL} ps
   sudo ${COMPOSE_COMMAND_LABEL} logs -f control
+  sudo ${COMPOSE_COMMAND_LABEL} logs -f gc-worker
   sudo ${COMPOSE_COMMAND_LABEL} logs -f registry
   sudo ${COMPOSE_COMMAND_LABEL} up -d --build
   sudo ${COMPOSE_COMMAND_LABEL} restart
@@ -641,6 +657,15 @@ Docker daemon mirror example on your client machine:
   }
   JSON
   ${restart_hint}
+
+Control plane hardening defaults:
+  - bound to 127.0.0.1 by default
+  - secure cookies enabled by default
+  - registry notifications require authentication
+  - garbage collection runs in the dedicated gc-worker service without docker.sock access
+
+Expose the Web UI only through an HTTPS reverse proxy.
+The registry mirror can still be used directly over http://IP:PORT inside your internal network.
 
 If you were just added to the docker group, reconnect your SSH session once before using docker without sudo.
 EOF
