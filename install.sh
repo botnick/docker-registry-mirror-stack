@@ -667,6 +667,12 @@ Control plane hardening defaults:
 Expose the Web UI only through an HTTPS reverse proxy.
 The registry mirror can still be used directly over http://IP:PORT inside your internal network.
 
+If you intentionally want the control UI on direct HTTP too, set these in .env and rebuild:
+  PUBLIC_BASE_URL=http://YOUR_SERVER_IP:${control_port}
+  COOKIE_SECURE=false
+  ALLOW_INSECURE_CONTROL=true
+  TRUST_PROXY_HEADERS=false
+
 If you were just added to the docker group, reconnect your SSH session once before using docker without sudo.
 EOF
 }

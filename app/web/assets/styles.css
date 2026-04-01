@@ -738,6 +738,17 @@ details summary { cursor: pointer; color: var(--muted); }
 .login-panel h2 { font-size: clamp(2rem, 3vw, 2.65rem); }
 .login-form { display: grid; gap: 1rem; }
 .login-form .primary-button { margin-top: 0.15rem; }
+.login-warning {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem 1.05rem;
+  border-radius: 22px;
+  background: rgba(202, 90, 79, 0.12);
+  border: 1px solid rgba(202, 90, 79, 0.22);
+  color: #7b241d;
+}
+.login-warning strong,
+.login-warning p { margin: 0; }
 .form-error { margin: 0; color: var(--danger); font-weight: 600; }
 .login-footnote { color: var(--muted); font-size: 0.95rem; padding-top: 0.3rem; }
 

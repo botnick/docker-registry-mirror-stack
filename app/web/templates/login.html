@@ -50,6 +50,12 @@
         <h2>เข้าสู่ระบบควบคุม</h2>
         <p class="support-copy">เข้าสู่ระบบด้วยบัญชี operator เพื่อดูภาพรวมและสั่งงานที่จำเป็นของ registry mirror</p>
       </div>
+      {{if .InsecureAccessWarning}}
+      <div class="login-warning">
+        <strong>ต้องปรับโหมดการเข้าถึงก่อน</strong>
+        <p>{{.InsecureAccessWarning}}</p>
+      </div>
+      {{end}}
       <form id="login-form" class="login-form">
         <label>
           <span>ชื่อผู้ใช้</span>

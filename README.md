@@ -242,6 +242,45 @@ PUBLIC_BASE_URL=https://registry-control.internal.example
 sudo docker compose up -d --build
 ```
 
+## Direct HTTP Control UI
+
+ถ้าคุณตั้งใจจะเปิดหน้า control ตรงแบบ `http://IP:8080` ภายในจริง ๆ ก็ทำได้ แต่ต้องปิด secure cookie ให้ตรงกับวิธีเข้าใช้งาน ไม่เช่นนั้นจะเกิดอาการ login ผ่านแต่ browser ไม่เก็บ session และหน้า `/force-password` หรือ `/dashboard` จะเข้าไม่ได้
+
+ตั้งค่าใน `.env` แบบนี้:
+
+```env
+CONTROL_BIND_ADDRESS=0.0.0.0
+CONTROL_PORT=8080
+PUBLIC_BASE_URL=http://YOUR_SERVER_IP:8080
+COOKIE_SECURE=false
+ALLOW_INSECURE_CONTROL=true
+TRUST_PROXY_HEADERS=false
+```
+
+จากนั้น rebuild:
+
+```bash
+sudo docker compose up -d --build
+```
+
+เช็กว่า cookie ไม่ได้ถูกตั้งเป็น `Secure`:
+
+```bash
+curl -i http://YOUR_SERVER_IP:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  --data '{"username":"admin","password":"YOUR_PASSWORD"}'
+```
+
+ถ้าจะทดสอบให้ครบแบบเก็บ cookie:
+
+```bash
+curl -c cookie.txt -i http://YOUR_SERVER_IP:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  --data '{"username":"admin","password":"YOUR_PASSWORD"}'
+
+curl -b cookie.txt http://YOUR_SERVER_IP:8080/api/auth/me
+```
+
 ## Configure Docker Clients to Use the Mirror
 
 บนเครื่อง client ที่จะใช้ Docker Hub mirror ภายใน:
@@ -434,6 +473,30 @@ curl -fsS http://127.0.0.1:8080/healthz
 
 ```env
 PUBLIC_BASE_URL=https://registry-control.internal.example
+```
+
+แล้วรัน:
+
+```bash
+sudo docker compose up -d --build
+```
+
+### Login ผ่านแต่หน้าไม่ไปต่อ
+
+อาการนี้มักเกิดตอนเปิด control ผ่าน `http://IP:8080` ตรง ๆ แต่ยังใช้ค่าเดิมแบบ production:
+
+```env
+COOKIE_SECURE=true
+ALLOW_INSECURE_CONTROL=false
+```
+
+ถ้าจะใช้ direct HTTP จริง ให้เปลี่ยนเป็น:
+
+```env
+PUBLIC_BASE_URL=http://YOUR_SERVER_IP:8080
+COOKIE_SECURE=false
+ALLOW_INSECURE_CONTROL=true
+TRUST_PROXY_HEADERS=false
 ```
 
 แล้วรัน:

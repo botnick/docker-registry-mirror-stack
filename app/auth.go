@@ -72,13 +72,18 @@ func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = a.templates.ExecuteTemplate(w, "login.html", map[string]any{
-		"Title": "เข้าสู่ระบบ",
+		"Title":                 "เข้าสู่ระบบ",
+		"InsecureAccessWarning": a.insecureAccessWarning(r),
 	})
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		a.writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if warning := a.insecureAccessWarning(r); warning != "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": warning})
 		return
 	}
 
@@ -372,8 +377,13 @@ func (a *App) sameOrigin(r *http.Request) bool {
 		return origin == a.cfg.PublicBaseURL
 	}
 
+	scheme, host := a.requestSchemeAndHost(r)
+	return origin == scheme+"://"+host
+}
+
+func (a *App) requestSchemeAndHost(r *http.Request) (string, string) {
 	scheme := "http"
-	if r.TLS != nil || a.cfg.CookieSecure {
+	if r.TLS != nil {
 		scheme = "https"
 	}
 	host := r.Host
@@ -385,7 +395,18 @@ func (a *App) sameOrigin(r *http.Request) bool {
 			host = forwardedHost
 		}
 	}
-	return origin == scheme+"://"+host
+	return scheme, host
+}
+
+func (a *App) insecureAccessWarning(r *http.Request) string {
+	if !a.cfg.CookieSecure {
+		return ""
+	}
+	scheme, _ := a.requestSchemeAndHost(r)
+	if strings.EqualFold(scheme, "https") {
+		return ""
+	}
+	return "Control UI นี้ถูกตั้งให้ใช้ HTTPS เท่านั้น ตอนนี้คุณเปิดผ่าน HTTP ตรง ๆ จึงจะไม่สามารถเก็บ session cookie ได้ ให้ใช้งานผ่าน HTTPS reverse proxy หรือเปลี่ยนเป็น COOKIE_SECURE=false พร้อม ALLOW_INSECURE_CONTROL=true สำหรับโหมด http://IP:PORT"
 }
 
 func (a *App) notificationAuthorized(r *http.Request) bool {
