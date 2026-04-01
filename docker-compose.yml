@@ -1,0 +1,82 @@
+services:
+  registry:
+    image: registry:2.8.3
+    container_name: registry-mirror
+    restart: unless-stopped
+    ports:
+      - "${REGISTRY_PORT:-5000}:5000"
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      TZ: UTC
+    volumes:
+      - registry_data:/var/lib/registry
+      - ./registry/config.yml:/etc/distribution/config.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  control:
+    build:
+      context: ./app
+    container_name: registry-control
+    restart: unless-stopped
+    depends_on:
+      - registry
+    ports:
+      - "${CONTROL_PORT:-8080}:8080"
+    environment:
+      REGISTRY_URL: http://registry:5000
+      REGISTRY_CONTAINER_NAME: registry-mirror
+      REGISTRY_DATA_PATH: /var/lib/registry
+      REGISTRY_CONFIG_PATH: /etc/distribution/config.yml
+      SQLITE_PATH: /data/metadata/registry_meta.db
+      GC_REQUEST_FLAG: /data/state/gc.requested
+      LISTEN_HOST: 0.0.0.0
+      LISTEN_PORT: "8080"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      SESSION_REFRESH_MINUTES: ${SESSION_REFRESH_MINUTES:-15}
+      CONTROL_BOOTSTRAP_USERNAME: ${CONTROL_BOOTSTRAP_USERNAME:-admin}
+      CONTROL_BOOTSTRAP_PASSWORD: ${CONTROL_BOOTSTRAP_PASSWORD:-}
+      CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE: ${CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE:-false}
+      DRY_RUN: ${DRY_RUN:-false}
+      JANITOR_INTERVAL_SECONDS: ${JANITOR_INTERVAL_SECONDS:-3600}
+      MAX_DELETE_BATCH: ${MAX_DELETE_BATCH:-20}
+      UNUSED_DAYS: ${UNUSED_DAYS:-30}
+      MIN_CACHE_AGE_DAYS: ${MIN_CACHE_AGE_DAYS:-3}
+      LOW_WATERMARK_PCT: ${LOW_WATERMARK_PCT:-20}
+      TARGET_FREE_PCT: ${TARGET_FREE_PCT:-35}
+      EMERGENCY_FREE_PCT: ${EMERGENCY_FREE_PCT:-10}
+      GC_HOUR_UTC: ${GC_HOUR_UTC:-19}
+      PROTECTED_REPOS_REGEX: ${PROTECTED_REPOS_REGEX:-^(library/)?(alpine|ubuntu|busybox|debian)$}
+      PROTECTED_TAGS_REGEX: ${PROTECTED_TAGS_REGEX:-^(latest|stable|lts)$}
+      UPSTREAM_HEALTH_URL: ${UPSTREAM_HEALTH_URL:-https://registry-1.docker.io/v2/}
+      HEALTH_CHECK_INTERVAL_SECONDS: ${HEALTH_CHECK_INTERVAL_SECONDS:-60}
+      UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-6}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
+      EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-30}
+      JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-90}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      TZ: UTC
+    volumes:
+      - registry_data:/var/lib/registry
+      - ./registry/config.yml:/etc/distribution/config.yml:ro
+      - ./metadata:/data/metadata
+      - ./state:/data/state
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  registry_data:
+    name: registry_data

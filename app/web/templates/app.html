@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} | Registry Mirror Control</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body
+  class="app-shell {{if .RestrictedMode}}restricted-shell{{end}}"
+  data-page="{{.PageID}}"
+  data-username="{{.Username}}"
+  data-csrf="{{.CSRFToken}}"
+  data-must-change-password="{{if .MustChangePassword}}true{{else}}false{{end}}"
+  data-restricted-mode="{{if .RestrictedMode}}true{{else}}false{{end}}"
+>
+  <div class="frame-glow"></div>
+  {{if not .RestrictedMode}}
+  <aside class="sidebar">
+    <a class="brand" href="/dashboard">
+      <span class="brand-mark"></span>
+      <span>
+        <strong>Registry Mirror</strong>
+        <small>Operator Control Plane</small>
+      </span>
+    </a>
+    <nav class="nav">
+      <a href="/dashboard" data-nav="dashboard">ภาพรวม</a>
+      <a href="/cache" data-nav="cache">แคชและดิสก์</a>
+      <a href="/artifacts" data-nav="artifacts">คลัง Artifacts</a>
+      <a href="/events" data-nav="events">Events</a>
+      <a href="/jobs" data-nav="jobs">Jobs</a>
+      <a href="/protections" data-nav="protections">Pinned / Protected</a>
+      <a href="/cleanup" data-nav="cleanup">Cleanup</a>
+      <a href="/gc" data-nav="gc">Garbage Collection</a>
+      <a href="/health" data-nav="health">Fallback / Upstream</a>
+      <a href="/maintenance" data-nav="maintenance">Maintenance</a>
+      <a href="/logs" data-nav="logs">Logs</a>
+      <a href="/settings" data-nav="settings">Settings</a>
+      <a href="/password" data-nav="password">เปลี่ยนรหัสผ่าน</a>
+    </nav>
+    <div class="sidebar-foot">
+      <p>ผู้ใช้งาน: <strong>{{.Username}}</strong></p>
+      <button class="ghost-button" id="logout-button" type="button">ออกจากระบบ</button>
+    </div>
+  </aside>
+  {{end}}
+  <main class="workspace">
+    <header class="workspace-head">
+      <div>
+        <p class="eyebrow">Registry Mirror Cache Platform</p>
+        <h1>{{.Title}}</h1>
+      </div>
+      <div class="head-actions">
+        {{if .RestrictedMode}}
+        <button class="ghost-button" id="logout-button" type="button">ออกจากระบบ</button>
+        {{else}}
+        <button class="ghost-button" id="refresh-page" type="button">รีเฟรชข้อมูล</button>
+        {{end}}
+      </div>
+    </header>
+    <section id="flash-message" class="flash hidden" aria-live="polite"></section>
+    <section id="page-root" class="page-root"></section>
+  </main>
+  <script defer src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,228 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	second = time.Second
+	minute = time.Minute
+	hour   = time.Hour
+)
+
+type Config struct {
+	RegistryURL                  string
+	RegistryContainerName        string
+	RegistryDataPath             string
+	RegistryConfigPath           string
+	SQLitePath                   string
+	GCRequestFlag                string
+	ListenHost                   string
+	ListenPort                   int
+	PublicBaseURL                string
+	CookieSecure                 bool
+	SessionSecret                string
+	SessionTTL                   time.Duration
+	SessionRefreshInterval       time.Duration
+	BootstrapUsername            string
+	BootstrapPassword            string
+	BootstrapForcePasswordChange bool
+	DryRun                       bool
+	JanitorInterval              time.Duration
+	MaxDeleteBatch               int
+	UnusedDays                   int
+	MinCacheAgeDays              int
+	LowWatermarkPct              int
+	TargetFreePct                int
+	EmergencyFreePct             int
+	GCHourUTC                    int
+	ProtectedReposPattern        string
+	ProtectedTagsPattern         string
+	UpstreamURL                  string
+	HealthCheckInterval          time.Duration
+	UpstreamTimeout              time.Duration
+	LogRetentionDays             int
+	EventRetentionDays           int
+	JobRetentionDays             int
+	LoginMaxAttempts             int
+	LoginLockDuration            time.Duration
+}
+
+func LoadConfig() (Config, error) {
+	cfg := Config{
+		RegistryURL:                  strings.TrimRight(getEnv("REGISTRY_URL", "http://registry:5000"), "/"),
+		RegistryContainerName:        getEnv("REGISTRY_CONTAINER_NAME", "registry-mirror"),
+		RegistryDataPath:             getEnv("REGISTRY_DATA_PATH", "/var/lib/registry"),
+		RegistryConfigPath:           getEnv("REGISTRY_CONFIG_PATH", "/etc/distribution/config.yml"),
+		SQLitePath:                   getEnv("SQLITE_PATH", "/data/metadata/registry_meta.db"),
+		GCRequestFlag:                getEnv("GC_REQUEST_FLAG", "/data/state/gc.requested"),
+		ListenHost:                   getEnv("LISTEN_HOST", "0.0.0.0"),
+		PublicBaseURL:                strings.TrimRight(getEnv("PUBLIC_BASE_URL", ""), "/"),
+		CookieSecure:                 parseBool(getEnv("COOKIE_SECURE", "false")),
+		SessionSecret:                strings.TrimSpace(os.Getenv("SESSION_SECRET")),
+		BootstrapUsername:            getEnv("CONTROL_BOOTSTRAP_USERNAME", "admin"),
+		BootstrapPassword:            os.Getenv("CONTROL_BOOTSTRAP_PASSWORD"),
+		BootstrapForcePasswordChange: parseBool(getEnv("CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE", "false")),
+		DryRun:                       parseBool(getEnv("DRY_RUN", "false")),
+		ProtectedReposPattern:        getEnv("PROTECTED_REPOS_REGEX", ""),
+		ProtectedTagsPattern:         getEnv("PROTECTED_TAGS_REGEX", ""),
+		UpstreamURL:                  strings.TrimRight(getEnv("UPSTREAM_HEALTH_URL", "https://registry-1.docker.io/v2/"), "/"),
+	}
+
+	var err error
+	if cfg.ListenPort, err = getEnvInt("LISTEN_PORT", 8080); err != nil {
+		return Config{}, err
+	}
+
+	sessionHours, err := getEnvInt("SESSION_TTL_HOURS", 24)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SessionTTL = time.Duration(sessionHours) * hour
+
+	refreshMinutes, err := getEnvInt("SESSION_REFRESH_MINUTES", 15)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SessionRefreshInterval = time.Duration(refreshMinutes) * minute
+
+	janitorSeconds, err := getEnvInt("JANITOR_INTERVAL_SECONDS", 3600)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.JanitorInterval = time.Duration(janitorSeconds) * second
+
+	if cfg.MaxDeleteBatch, err = getEnvInt("MAX_DELETE_BATCH", 20); err != nil {
+		return Config{}, err
+	}
+	if cfg.UnusedDays, err = getEnvInt("UNUSED_DAYS", 30); err != nil {
+		return Config{}, err
+	}
+	if cfg.MinCacheAgeDays, err = getEnvInt("MIN_CACHE_AGE_DAYS", 3); err != nil {
+		return Config{}, err
+	}
+	if cfg.LowWatermarkPct, err = getEnvInt("LOW_WATERMARK_PCT", 20); err != nil {
+		return Config{}, err
+	}
+	if cfg.TargetFreePct, err = getEnvInt("TARGET_FREE_PCT", 35); err != nil {
+		return Config{}, err
+	}
+	if cfg.EmergencyFreePct, err = getEnvInt("EMERGENCY_FREE_PCT", 10); err != nil {
+		return Config{}, err
+	}
+	if cfg.GCHourUTC, err = getEnvInt("GC_HOUR_UTC", 19); err != nil {
+		return Config{}, err
+	}
+
+	healthCheckSeconds, err := getEnvInt("HEALTH_CHECK_INTERVAL_SECONDS", 60)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.HealthCheckInterval = time.Duration(healthCheckSeconds) * second
+
+	upstreamTimeoutSeconds, err := getEnvInt("UPSTREAM_TIMEOUT_SECONDS", 6)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.UpstreamTimeout = time.Duration(upstreamTimeoutSeconds) * second
+
+	if cfg.LogRetentionDays, err = getEnvInt("LOG_RETENTION_DAYS", 30); err != nil {
+		return Config{}, err
+	}
+	if cfg.EventRetentionDays, err = getEnvInt("EVENT_RETENTION_DAYS", 30); err != nil {
+		return Config{}, err
+	}
+	if cfg.JobRetentionDays, err = getEnvInt("JOB_RETENTION_DAYS", 90); err != nil {
+		return Config{}, err
+	}
+	if cfg.LoginMaxAttempts, err = getEnvInt("LOGIN_MAX_ATTEMPTS", 5); err != nil {
+		return Config{}, err
+	}
+	lockMinutes, err := getEnvInt("LOGIN_LOCK_MINUTES", 15)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.LoginLockDuration = time.Duration(lockMinutes) * minute
+
+	switch {
+	case cfg.SessionSecret == "":
+		return Config{}, fmt.Errorf("SESSION_SECRET is required")
+	case cfg.ListenPort <= 0 || cfg.ListenPort > 65535:
+		return Config{}, fmt.Errorf("LISTEN_PORT must be between 1 and 65535")
+	case cfg.LowWatermarkPct < 0 || cfg.LowWatermarkPct > 100:
+		return Config{}, fmt.Errorf("LOW_WATERMARK_PCT must be between 0 and 100")
+	case cfg.TargetFreePct < 0 || cfg.TargetFreePct > 100:
+		return Config{}, fmt.Errorf("TARGET_FREE_PCT must be between 0 and 100")
+	case cfg.EmergencyFreePct < 0 || cfg.EmergencyFreePct > 100:
+		return Config{}, fmt.Errorf("EMERGENCY_FREE_PCT must be between 0 and 100")
+	case cfg.EmergencyFreePct >= cfg.LowWatermarkPct:
+		return Config{}, fmt.Errorf("EMERGENCY_FREE_PCT must be lower than LOW_WATERMARK_PCT")
+	case cfg.GCHourUTC < 0 || cfg.GCHourUTC > 23:
+		return Config{}, fmt.Errorf("GC_HOUR_UTC must be between 0 and 23")
+	case cfg.UpstreamURL == "":
+		return Config{}, fmt.Errorf("UPSTREAM_HEALTH_URL must not be empty")
+	case cfg.MaxDeleteBatch <= 0:
+		return Config{}, fmt.Errorf("MAX_DELETE_BATCH must be greater than 0")
+	case cfg.UnusedDays <= 0:
+		return Config{}, fmt.Errorf("UNUSED_DAYS must be greater than 0")
+	case cfg.MinCacheAgeDays < 0:
+		return Config{}, fmt.Errorf("MIN_CACHE_AGE_DAYS must be 0 or greater")
+	case cfg.LoginMaxAttempts < 1:
+		return Config{}, fmt.Errorf("LOGIN_MAX_ATTEMPTS must be greater than 0")
+	case cfg.SessionTTL <= 0:
+		return Config{}, fmt.Errorf("SESSION_TTL_HOURS must be greater than 0")
+	case cfg.SessionRefreshInterval <= 0:
+		return Config{}, fmt.Errorf("SESSION_REFRESH_MINUTES must be greater than 0")
+	case cfg.HealthCheckInterval <= 0:
+		return Config{}, fmt.Errorf("HEALTH_CHECK_INTERVAL_SECONDS must be greater than 0")
+	case cfg.UpstreamTimeout <= 0:
+		return Config{}, fmt.Errorf("UPSTREAM_TIMEOUT_SECONDS must be greater than 0")
+	case cfg.LogRetentionDays <= 0:
+		return Config{}, fmt.Errorf("LOG_RETENTION_DAYS must be greater than 0")
+	case cfg.EventRetentionDays <= 0:
+		return Config{}, fmt.Errorf("EVENT_RETENTION_DAYS must be greater than 0")
+	case cfg.JobRetentionDays <= 0:
+		return Config{}, fmt.Errorf("JOB_RETENTION_DAYS must be greater than 0")
+	}
+
+	return cfg, nil
+}
+
+func (c Config) ListenAddress() string {
+	return fmt.Sprintf("%s:%d", c.ListenHost, c.ListenPort)
+}
+
+func (c Config) EnsurePaths() error {
+	if err := os.MkdirAll(filepath.Dir(c.SQLitePath), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(c.GCRequestFlag), 0o755); err != nil {
+		return err
+	}
+	return nil
+}
+
+func getEnv(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func getEnvInt(key string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	return parsed, nil
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} | Registry Mirror Control</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="login-shell">
+  <div class="login-panel">
+    <div>
+      <p class="eyebrow">Registry Mirror Operator UI</p>
+      <h1>เข้าสู่ระบบควบคุม</h1>
+      <p class="support-copy">ใช้หน้านี้เพื่อดูสถานะแคช, fallback, cleanup, GC, logs, maintenance และการตั้งค่าที่สำคัญทั้งหมดจากจุดเดียว</p>
+    </div>
+    <form id="login-form" class="login-form">
+      <label>
+        <span>ชื่อผู้ใช้</span>
+        <input type="text" name="username" autocomplete="username" required>
+      </label>
+      <label>
+        <span>รหัสผ่าน</span>
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primary-button">เข้าสู่ระบบ</button>
+      <p id="login-error" class="form-error hidden"></p>
+    </form>
+    <div class="login-footnote">
+      <p>หากเป็นรหัสผ่านที่ระบบสร้างให้ครั้งแรก ระบบจะบังคับให้เปลี่ยนรหัสผ่านก่อนใช้งานหน้าอื่น</p>
+    </div>
+  </div>
+  <script defer src="/assets/login.js"></script>
+</body>
+</html>

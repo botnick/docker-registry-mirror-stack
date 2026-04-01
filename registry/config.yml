@@ -1,0 +1,27 @@
+version: 0.1
+log:
+  level: info
+storage:
+  filesystem:
+    rootdirectory: /var/lib/registry
+  delete:
+    enabled: true
+http:
+  addr: :5000
+proxy:
+  remoteurl: https://registry-1.docker.io
+compatibility:
+  schema1:
+    enabled: false
+notifications:
+  endpoints:
+    - name: control-webhook
+      url: http://control:8080/notifications
+      timeout: 1s
+      threshold: 5
+      backoff: 1s
+health:
+  storagedriver:
+    enabled: true
+    interval: 10s
+    threshold: 3
