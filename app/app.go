@@ -285,9 +285,11 @@ func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	assets, _ := fs.Sub(webFS, "web/assets")
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assets))))
+	mux.Handle("/favicon.ico", http.RedirectHandler("/assets/favicon.svg", http.StatusFound))
 
 	mux.HandleFunc("/healthz", a.handleHealthz)
 	if a.cfg.AppMode == "control" {
+		mux.HandleFunc("/robots.txt", a.handleRobotsTxt)
 		mux.HandleFunc("/notifications", a.handleNotifications)
 		mux.HandleFunc("/login", a.handleLoginPage)
 		mux.HandleFunc("/auth/login", a.handleLogin)
@@ -298,7 +300,11 @@ func (a *App) routes() http.Handler {
 		mux.Handle("/", protected)
 	}
 
-	return a.loggingMiddleware(mux)
+	handler := a.loggingMiddleware(mux)
+	if a.cfg.AppMode == "control" {
+		handler = a.noIndexMiddleware(handler)
+	}
+	return handler
 }
 
 func (a *App) handleProtectedRoutes(w http.ResponseWriter, r *http.Request) {
@@ -419,6 +425,13 @@ func (a *App) loggingMiddleware(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
+	})
+}
+
+func (a *App) noIndexMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet")
+		next.ServeHTTP(w, r)
 	})
 }
 

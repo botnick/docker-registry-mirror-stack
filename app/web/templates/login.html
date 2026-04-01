@@ -3,32 +3,70 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive,nosnippet">
   <title>{{.Title}} | Registry Mirror Control</title>
-  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Prompt:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260402-ui2">
 </head>
 <body class="login-shell">
-  <div class="login-panel">
-    <div>
-      <p class="eyebrow">Registry Mirror Operator UI</p>
-      <h1>เข้าสู่ระบบควบคุม</h1>
-      <p class="support-copy">ใช้หน้านี้เพื่อดูสถานะแคช, fallback, cleanup, GC, logs, maintenance และการตั้งค่าที่สำคัญทั้งหมดจากจุดเดียว</p>
-    </div>
-    <form id="login-form" class="login-form">
-      <label>
-        <span>ชื่อผู้ใช้</span>
-        <input type="text" name="username" autocomplete="username" required>
-      </label>
-      <label>
-        <span>รหัสผ่าน</span>
-        <input type="password" name="password" autocomplete="current-password" required>
-      </label>
-      <button type="submit" class="primary-button">เข้าสู่ระบบ</button>
-      <p id="login-error" class="form-error hidden"></p>
-    </form>
-    <div class="login-footnote">
-      <p>หากเป็นรหัสผ่านที่ระบบสร้างให้ครั้งแรก ระบบจะบังคับให้เปลี่ยนรหัสผ่านก่อนใช้งานหน้าอื่น</p>
-    </div>
+  <div class="login-stage">
+    <section class="login-intro">
+      <div class="login-brand">
+        <span class="brand-mark"></span>
+        <div>
+          <p class="eyebrow">Registry Mirror Operator UI</p>
+          <h1>Control plane ที่ดู cache, cleanup และ GC ได้จากจุดเดียว</h1>
+          <p class="support-copy">ใช้หน้านี้เพื่อตรวจสุขภาพของ mirror, ดู event และ artifact สำคัญ, สั่ง maintenance, และเช็ก runtime config แบบไม่ต้องไล่ดูหลาย service</p>
+        </div>
+      </div>
+      <div class="login-summary">
+        <div class="metric-card">
+          <span>Visibility</span>
+          <strong>Cache health, fallback, jobs</strong>
+          <p class="support-copy">ภาพรวมเดียวสำหรับสถานะ upstream, ดิสก์, janitor และ GC worker</p>
+        </div>
+        <div class="login-grid">
+          <div class="stat-line">
+            <span>Artifacts</span>
+            <strong>ค้นหา, pin, protect</strong>
+          </div>
+          <div class="stat-line">
+            <span>Operations</span>
+            <strong>Cleanup และ GC แยกสิทธิ์</strong>
+          </div>
+          <div class="stat-line">
+            <span>Audit trail</span>
+            <strong>Events, jobs, logs ครบ</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="login-panel">
+      <div>
+        <p class="eyebrow">Secure Sign In</p>
+        <h2>เข้าสู่ระบบควบคุม</h2>
+        <p class="support-copy">เข้าสู่ระบบด้วยบัญชี operator เพื่อดูภาพรวมและสั่งงานที่จำเป็นของ registry mirror</p>
+      </div>
+      <form id="login-form" class="login-form">
+        <label>
+          <span>ชื่อผู้ใช้</span>
+          <input type="text" name="username" autocomplete="username" required>
+        </label>
+        <label>
+          <span>รหัสผ่าน</span>
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="primary-button">เข้าสู่ระบบ</button>
+        <p id="login-error" class="form-error hidden"></p>
+      </form>
+      <div class="login-footnote">
+        <p>หากเป็นรหัสผ่านที่ระบบสร้างให้ครั้งแรก ระบบจะบังคับให้เปลี่ยนรหัสผ่านก่อนใช้งานหน้าอื่น</p>
+      </div>
+    </section>
   </div>
-  <script defer src="/assets/login.js"></script>
+  <script defer src="/assets/login.js?v=20260402-ui2"></script>
 </body>
 </html>

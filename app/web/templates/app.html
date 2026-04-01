@@ -3,8 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive,nosnippet">
   <title>{{.Title}} | Registry Mirror Control</title>
-  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Prompt:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260402-ui2">
 </head>
 <body
   class="app-shell {{if .RestrictedMode}}restricted-shell{{end}}"
@@ -16,40 +21,51 @@
 >
   <div class="frame-glow"></div>
   {{if not .RestrictedMode}}
-  <aside class="sidebar">
-    <a class="brand" href="/dashboard">
-      <span class="brand-mark"></span>
-      <span>
-        <strong>Registry Mirror</strong>
-        <small>Operator Control Plane</small>
-      </span>
-    </a>
-    <nav class="nav">
-      <a href="/dashboard" data-nav="dashboard">ภาพรวม</a>
-      <a href="/cache" data-nav="cache">แคชและดิสก์</a>
-      <a href="/artifacts" data-nav="artifacts">คลัง Artifacts</a>
-      <a href="/events" data-nav="events">Events</a>
-      <a href="/jobs" data-nav="jobs">Jobs</a>
-      <a href="/protections" data-nav="protections">Pinned / Protected</a>
-      <a href="/cleanup" data-nav="cleanup">Cleanup</a>
-      <a href="/gc" data-nav="gc">Garbage Collection</a>
-      <a href="/health" data-nav="health">Fallback / Upstream</a>
-      <a href="/maintenance" data-nav="maintenance">Maintenance</a>
-      <a href="/logs" data-nav="logs">Logs</a>
-      <a href="/settings" data-nav="settings">Settings</a>
-      <a href="/password" data-nav="password">เปลี่ยนรหัสผ่าน</a>
-    </nav>
-    <div class="sidebar-foot">
-      <p>ผู้ใช้งาน: <strong>{{.Username}}</strong></p>
-      <button class="ghost-button" id="logout-button" type="button">ออกจากระบบ</button>
+  <button class="sidebar-overlay" id="nav-overlay" type="button" aria-label="ปิดเมนูนำทาง"></button>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-top">
+      <a class="brand" href="/dashboard">
+        <span class="brand-mark"></span>
+        <span>
+          <strong>Registry Mirror</strong>
+          <small>Operator Control Plane</small>
+        </span>
+      </a>
+      <button class="sidebar-close ghost-button" id="nav-close" type="button">ปิด</button>
+    </div>
+    <div class="sidebar-stack">
+      <nav class="nav">
+        <a href="/dashboard" data-nav="dashboard">ภาพรวม</a>
+        <a href="/cache" data-nav="cache">แคชและดิสก์</a>
+        <a href="/artifacts" data-nav="artifacts">คลัง Artifacts</a>
+        <a href="/events" data-nav="events">Events</a>
+        <a href="/jobs" data-nav="jobs">Jobs</a>
+        <a href="/protections" data-nav="protections">Pinned / Protected</a>
+        <a href="/cleanup" data-nav="cleanup">Cleanup</a>
+        <a href="/gc" data-nav="gc">Garbage Collection</a>
+        <a href="/health" data-nav="health">Fallback / Upstream</a>
+        <a href="/maintenance" data-nav="maintenance">Maintenance</a>
+        <a href="/logs" data-nav="logs">Logs</a>
+        <a href="/settings" data-nav="settings">Settings</a>
+        <a href="/password" data-nav="password">เปลี่ยนรหัสผ่าน</a>
+      </nav>
+      <div class="sidebar-foot">
+        <p>ผู้ใช้งาน: <strong>{{.Username}}</strong></p>
+        <button class="ghost-button" id="logout-button" type="button">ออกจากระบบ</button>
+      </div>
     </div>
   </aside>
   {{end}}
   <main class="workspace">
     <header class="workspace-head">
-      <div>
-        <p class="eyebrow">Registry Mirror Cache Platform</p>
-        <h1>{{.Title}}</h1>
+      <div class="head-group">
+        {{if not .RestrictedMode}}
+        <button class="nav-toggle ghost-button" id="nav-toggle" type="button" aria-controls="sidebar" aria-expanded="false">เมนู</button>
+        {{end}}
+        <div>
+          <p class="eyebrow">Registry Mirror Cache Platform</p>
+          <h1>{{.Title}}</h1>
+        </div>
       </div>
       <div class="head-actions">
         {{if .RestrictedMode}}
@@ -59,9 +75,11 @@
         {{end}}
       </div>
     </header>
-    <section id="flash-message" class="flash hidden" aria-live="polite"></section>
-    <section id="page-root" class="page-root"></section>
+    <div class="workspace-shell">
+      <section id="flash-message" class="flash hidden" aria-live="polite"></section>
+      <section id="page-root" class="page-root"></section>
+    </div>
   </main>
-  <script defer src="/assets/app.js"></script>
+  <script defer src="/assets/app.js?v=20260402-ui2"></script>
 </body>
 </html>

@@ -23,6 +23,15 @@ func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *App) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "User-agent: *\nDisallow: /\n")
+}
+
 func (a *App) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		a.writeMethodNotAllowed(w, http.MethodPost)

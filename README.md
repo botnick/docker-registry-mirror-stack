@@ -1,138 +1,181 @@
-# Docker Registry Mirror Stack
+# Registry Mirror Stack
 
-สแตกนี้เอาไว้รัน Docker Registry Mirror แบบใช้งานจริงภายในองค์กร โดยมี 3 ส่วนหลัก:
+Registry Mirror Stack is a self-hosted Docker registry mirror for teams that want faster internal pulls, a local Docker Hub cache, a control plane for cleanup and operations, and a separate garbage collection worker for safer production use.
 
-- `registry` เป็น mirror หลักสำหรับให้ Docker client ดึง image เร็ว ๆ ผ่าน `http://IP:PORT`
-- `control` เป็น Web UI / API สำหรับดูสถานะ จัดการ cleanup และดู logs
-- `gc-worker` เป็น worker แยกสำหรับรัน garbage collection โดยไม่ให้ control plane ถือสิทธิ์สูงเกินจำเป็น
+โปรเจกต์นี้เหมาะกับคนที่ต้องการทำ Docker Registry Mirror ภายในองค์กรให้ใช้งานจริงได้ง่ายขึ้น โดยยังคงความเร็วแบบ `IP:PORT` ตรงสำหรับฝั่ง mirror แต่แยก control plane และ garbage collection ออกมาให้ปลอดภัยกว่าเดิม
 
-ค่าเริ่มต้นถูกปรับให้เหมาะกับ production ภายใน:
+## System Preview
 
-- mirror ยังใช้แบบตรง `http://IP:PORT` ได้
-- control bind แค่ `127.0.0.1` โดย default
-- control ควรเปิดผ่าน HTTPS reverse proxy เท่านั้น
-- secure cookie เปิดเป็น default
-- `/notifications` บังคับยืนยันตัวตน
-- logic event แยกตาม `push` / `pull` / `delete`
-- `delete` event จะไม่ resurrect artifact กลับมาเอง
-- GC ไม่ใช้ `docker.sock` ใน control plane แล้ว
+ภาพด้านล่างคือ control plane ของระบบจริงที่ใช้ดู mirror health, artifacts, cleanup, GC, logs, maintenance, และ runtime settings ทั้งบน desktop และ mobile โดยข้อมูลสำคัญยังแสดงครบและไม่ซ่อน digest หรือสถานะหลักทิ้ง
 
-คู่มือนี้เขียนให้ทำตามได้ตั้งแต่ `git clone` จนใช้งานได้จริง โดยตัดเรื่องที่ไม่จำเป็นออกให้เหลือแต่สิ่งสำคัญ
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/login.png" alt="Control plane login screen" width="100%">
+      <p><strong>Login</strong><br>หน้าเข้าสู่ระบบสำหรับ operator พร้อมมุมมองรวมของ cache health, cleanup และ GC</p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/dashboard-overview.png" alt="System dashboard" width="100%">
+      <p><strong>Dashboard</strong><br>ภาพรวมระบบสำหรับเช็ก health, storage pressure, fallback state และงานที่ต้องตัดสินใจทันที</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/artifact-catalog.png" alt="Artifact catalog" width="100%">
+      <p><strong>Artifact Catalog</strong><br>ค้นหา repo, ดู digest แบบเต็ม, pin/protect, และเช็กสถานะของ cached images จากจอเดียว</p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/cleanup-and-gc.png" alt="Cleanup workflow" width="100%">
+      <p><strong>Cleanup Workflow</strong><br>ดู candidate, threshold ปัจจุบัน, และประวัติ cleanup เพื่อ reclaim storage อย่างปลอดภัย</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/runtime-settings.png" alt="Runtime settings page" width="100%">
+      <p><strong>Runtime Settings</strong><br>สรุป config runtime, cleanup policy, fallback behavior, retention, และ path สำคัญทั้งหมด</p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/mobile-artifact-cards.png" alt="Responsive mobile artifact cards" width="100%">
+      <p><strong>Responsive Mobile View</strong><br>หน้าจอ mobile จะจัดตารางหลักเป็น card layout เพื่อให้ข้อมูลครบ อ่านง่าย และไม่ล้น viewport</p>
+    </td>
+  </tr>
+</table>
 
-## ภาพรวมเร็ว ๆ
+<details>
+  <summary><strong>Complete Control Plane Preview</strong></summary>
 
-หลังติดตั้งเสร็จ จะได้ประมาณนี้:
+  <table>
+    <tr>
+      <td width="50%"><img src="docs/screenshots/cache-overview.png" alt="Cache overview page" width="100%"><br><strong>Cache Overview</strong></td>
+      <td width="50%"><img src="docs/screenshots/artifact-detail.png" alt="Artifact detail page" width="100%"><br><strong>Artifact Detail</strong></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="docs/screenshots/events-stream.png" alt="Registry events stream" width="100%"><br><strong>Events</strong></td>
+      <td width="50%"><img src="docs/screenshots/jobs-history.png" alt="Job history page" width="100%"><br><strong>Jobs</strong></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="docs/screenshots/pinned-protected.png" alt="Pinned and protected management page" width="100%"><br><strong>Pinned and Protected</strong></td>
+      <td width="50%"><img src="docs/screenshots/garbage-collection.png" alt="Garbage collection page" width="100%"><br><strong>Garbage Collection</strong></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="docs/screenshots/fallback-upstream.png" alt="Fallback and upstream monitoring page" width="100%"><br><strong>Fallback and Upstream</strong></td>
+      <td width="50%"><img src="docs/screenshots/maintenance-controls.png" alt="Maintenance controls page" width="100%"><br><strong>Maintenance Controls</strong></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="docs/screenshots/system-logs.png" alt="System logs page" width="100%"><br><strong>System Logs</strong></td>
+      <td width="50%"><img src="docs/screenshots/password-change.png" alt="Password change page" width="100%"><br><strong>Password Change</strong></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="docs/screenshots/force-password.png" alt="First login force password change page" width="100%"><br><strong>First Login Password Rotation</strong></td>
+      <td width="50%"></td>
+    </tr>
+  </table>
+</details>
 
-- Docker client ในวงในชี้ mirror ไปที่ `http://YOUR_SERVER_IP:5000`
-- ผู้ดูแลระบบเข้า Web UI ผ่าน `https://YOUR_CONTROL_HOSTNAME/login`
-- ตัว `control` จริงจะฟังแค่ `127.0.0.1:8080`
+## Why This Project Exists
+
+หลายทีมต้องการสิ่งนี้พร้อมกัน:
+
+- Docker Hub cache เพื่อลด latency เวลา `docker pull`
+- internal Docker registry mirror สำหรับเครื่อง build, CI runner, และ server ภายใน
+- registry proxy cache ที่ไม่ต้องพึ่งบริการภายนอก
+- cleanup และ garbage collection ที่ดูและสั่งงานได้จาก UI
+- production defaults ที่ปลอดภัยกว่าแค่เปิด registry proxy ตรง ๆ
+
+สแตกนี้จึงรวมสิ่งที่ใช้งานจริงบ่อยไว้ในชุดเดียว:
+
+- `registry` สำหรับทำ Docker Registry Mirror และ registry proxy cache
+- `control` สำหรับ Web UI / API, observability, cleanup, maintenance, และ event tracking
+- `gc-worker` สำหรับ registry garbage collection แบบแยกหน้าที่ ไม่ให้ control plane ถือสิทธิ์ host มากเกินจำเป็น
+
+## What You Get
+
+- Fast internal Docker image pulls through a self-hosted registry mirror
+- Docker Hub proxy cache ที่ยังใช้งานผ่าน `http://IP:PORT` ได้ตรง ๆ ภายในวงแลน
+- Protected control plane ที่ bind แค่ `127.0.0.1` โดย default
+- Secure cookie และ reverse-proxy-friendly settings สำหรับ production
+- Responsive operator UI ที่ยังอ่านข้อมูลครบทั้ง desktop และ mobile
+- Authenticated registry notifications
+- Artifact lifecycle logic ที่แยก `push`, `pull`, และ `delete` ชัดเจน
+- Registry cleanup workflow และ garbage collection worker ที่สิทธิ์ต่ำกว่าแบบเดิม
+
+## Architecture
+
+ภาพรวมการใช้งานจริง:
+
+- Docker clients ใช้ mirror ที่ `http://YOUR_SERVER_IP:5000`
+- Operators ใช้ control UI ผ่าน `https://YOUR_CONTROL_HOSTNAME/login`
+- ตัว `control` ฟังอยู่ที่ `127.0.0.1:8080`
 - reverse proxy รับ HTTPS แล้วส่งต่อเข้า `127.0.0.1:8080`
+- `gc-worker` อ่าน GC request จาก shared state แล้วรัน registry garbage collection แยกจาก control plane
 
-## สิ่งที่ต้องมี
+แนวทางนี้ช่วยให้ได้ทั้ง:
 
-เครื่องปลายทางควรเป็น Linux และมี:
+- ความเร็วของ internal Docker registry mirror
+- ความง่ายของ Docker Hub cache แบบ self-hosted
+- การแยกสิทธิ์ของงาน maintenance ที่เสี่ยงกว่า
 
-- สิทธิ์ `sudo`
-- internet ออกไปติดตั้ง package และดึง image ได้
-- DNS หรือ hostname ภายในสำหรับหน้า control ถ้าจะใช้ reverse proxy
-- port ที่ต้องใช้:
-  - `5000/tcp` สำหรับ registry mirror
-  - `443/tcp` สำหรับ reverse proxy ของ control
+## Quick Start
 
-ไม่จำเป็นต้องมี Docker ติดตั้งมาก่อน เพราะ `install.sh` จะจัดการให้
-
-## โฟลว์ติดตั้งแบบแนะนำ
-
-### 1. เข้าเครื่องปลายทาง
+บนเครื่อง Linux ปลายทาง:
 
 ```bash
 ssh your-user@YOUR_SERVER_IP
-```
-
-### 2. clone โปรเจกต์
-
-```bash
 git clone https://github.com/botnick/docker-registry-mirror-stack.git
 cd docker-registry-mirror-stack
-```
-
-ถ้าจะใช้ branch อื่น:
-
-```bash
-git clone -b main https://github.com/botnick/docker-registry-mirror-stack.git
-cd docker-registry-mirror-stack
-```
-
-### 3. ดูค่า config ตัวอย่างก่อน
-
-```bash
-sed -n '1,220p' .env.example
-```
-
-### 4. รัน installer
-
-```bash
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-installer จะทำให้:
+ตัว installer จะ:
 
-1. ตรวจ distro และ package manager
-2. update/upgrade เครื่อง
-3. ติดตั้ง Docker และ Compose
-4. เพิ่ม user เข้า docker group ถ้าจำเป็น
-5. สร้าง `.env` ถ้ายังไม่มี
-6. generate `SESSION_SECRET` และ `NOTIFICATIONS_PASSWORD`
-7. ถ้ายังไม่มีฐานข้อมูล จะถาม bootstrap admin ครั้งแรก
-8. build และรัน `registry`, `control`, `gc-worker`
+1. ตรวจ distro และติดตั้ง Docker / Compose
+2. สร้าง `.env` จาก `.env.example` ถ้ายังไม่มี
+3. generate `SESSION_SECRET` และ `NOTIFICATIONS_PASSWORD`
+4. ถ้าเป็นครั้งแรก จะถาม bootstrap admin
+5. build และรัน `registry`, `control`, `gc-worker`
 
-### 5. เช็กว่าสแตกขึ้นครบ
+หลังติดตั้งเสร็จ ให้เช็ก:
 
 ```bash
 sudo docker compose ps
+curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-ถ้าเครื่องรองรับแค่ `docker-compose` ให้ใช้:
+ถ้าเครื่องรองรับแค่ `docker-compose` ให้เปลี่ยนคำสั่งตามนั้น
 
-```bash
-sudo docker-compose ps
+## Production Setup
+
+ค่า default รอบนี้ถูกตั้งให้เหมาะกับ production ภายใน:
+
+- Registry mirror เปิดออกภายนอกเครื่องที่ `REGISTRY_PORT`
+- Control plane bind แค่ `127.0.0.1`
+- Control plane ควรเปิดผ่าน HTTPS reverse proxy
+- Secure cookie เปิดเป็น default
+- `/notifications` ต้อง auth
+- GC แยกไป worker โดยไม่ใช้ `docker.sock` ใน control plane
+
+ค่า config ที่สำคัญใน [`.env.example`](/c:/Users/n/Downloads/registry-mirror-stack/.env.example):
+
+```env
+REGISTRY_PORT=5000
+CONTROL_BIND_ADDRESS=127.0.0.1
+CONTROL_PORT=8080
+PUBLIC_BASE_URL=
+COOKIE_SECURE=true
+ALLOW_INSECURE_CONTROL=false
+TRUST_PROXY_HEADERS=true
+NOTIFICATIONS_USERNAME=registry-notify
+NOTIFICATIONS_PASSWORD=CHANGE_ME
 ```
 
-## ค่า default สำคัญที่ควรรู้
-
-ค่าใน [`.env.example`](/c:/Users/n/Downloads/registry-mirror-stack/.env.example) ที่สำคัญที่สุดมีแค่นี้:
-
-- `REGISTRY_PORT=5000`
-- `CONTROL_BIND_ADDRESS=127.0.0.1`
-- `CONTROL_PORT=8080`
-- `PUBLIC_BASE_URL=`
-- `COOKIE_SECURE=true`
-- `ALLOW_INSECURE_CONTROL=false`
-- `TRUST_PROXY_HEADERS=true`
-- `NOTIFICATIONS_USERNAME=registry-notify`
-- `NOTIFICATIONS_PASSWORD=CHANGE_ME`
-
-ความหมายแบบสั้น:
-
-- `REGISTRY_PORT` คือ port ที่ Docker client ใช้ยิงเข้า mirror ตรง
-- `CONTROL_BIND_ADDRESS` ควรคงเป็น `127.0.0.1`
-- `PUBLIC_BASE_URL` ควรตั้งเป็น URL HTTPS ของหน้า control หลัง reverse proxy
-- `COOKIE_SECURE=true` คือ session cookie จะใช้กับ HTTPS เท่านั้น
-- `ALLOW_INSECURE_CONTROL=false` คือไม่ยอมให้ control วิ่งแบบ insecure โดยไม่ตั้งใจ
-- `NOTIFICATIONS_*` คือ user/password ที่ registry ใช้ยิง webhook เข้า `/notifications`
-
-## การตั้งค่าแบบแนะนำก่อนรันจริง
-
-หลังรัน installer ครั้งแรกแล้ว แนะนำให้แก้ `.env` ให้ตรงเครื่องจริง
-
-เปิดไฟล์:
+หลัง installer รันเสร็จ แนะนำให้เปิด `.env` แล้วตั้งค่าจริงของระบบ:
 
 ```bash
 nano .env
 ```
 
-อย่างน้อยให้เช็กค่าพวกนี้:
+ตัวอย่างค่าแนะนำ:
 
 ```env
 REGISTRY_PORT=5000
@@ -148,46 +191,21 @@ CONTROL_BOOTSTRAP_USERNAME=admin
 CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE=true
 ```
 
-ถ้าแก้ `.env` แล้วให้ build ใหม่:
+ถ้าแก้ `.env` แล้ว:
 
 ```bash
 sudo docker compose up -d --build
 ```
 
-## วิธีใช้งานที่ถูกต้อง
+## Reverse Proxy for the Control Plane
 
-### Registry mirror
+Registry mirror ยังควรให้ Docker client ยิงตรงผ่าน `IP:PORT` เพื่อความเร็วภายใน แต่หน้า control ควรอยู่หลัง HTTPS reverse proxy
 
-ให้ใช้ตรงผ่าน IP:PORT ภายในเครือข่ายได้เลย:
-
-```text
-http://YOUR_SERVER_IP:5000
-```
-
-ตรงนี้ไม่จำเป็นต้องไปวิ่งผ่าน Cloudflare หรือ reverse proxy ถ้าเป้าหมายคือความเร็วภายใน
-
-### Control plane
-
-ไม่ควรเปิด `http://YOUR_SERVER_IP:8080` ตรง ๆ ให้คนใช้งาน
-
-แนวทางที่ถูกคือ:
-
-- `control` ฟังที่ `127.0.0.1:8080`
-- reverse proxy รับ `https://YOUR_CONTROL_HOSTNAME`
-- reverse proxy ส่งต่อไป `http://127.0.0.1:8080`
-
-## ตัวอย่างตั้ง Nginx reverse proxy
-
-ติดตั้ง Nginx:
+ตัวอย่าง Nginx:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y nginx
-```
-
-สร้าง config:
-
-```bash
 sudo tee /etc/nginx/sites-available/registry-control.conf >/dev/null <<'NGINX'
 server {
     listen 443 ssl http2;
@@ -207,31 +225,26 @@ server {
     }
 }
 NGINX
-```
-
-เปิดใช้งาน:
-
-```bash
 sudo ln -sf /etc/nginx/sites-available/registry-control.conf /etc/nginx/sites-enabled/registry-control.conf
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-จากนั้นตั้งใน `.env`:
+แล้วตั้ง:
 
 ```env
 PUBLIC_BASE_URL=https://registry-control.internal.example
 ```
 
-แล้ว rebuild:
+จากนั้น rebuild:
 
 ```bash
 sudo docker compose up -d --build
 ```
 
-## วิธีตั้ง Docker client ให้ใช้ mirror
+## Configure Docker Clients to Use the Mirror
 
-บนเครื่อง client ที่จะดึง image ผ่าน mirror:
+บนเครื่อง client ที่จะใช้ Docker Hub mirror ภายใน:
 
 ```bash
 sudo mkdir -p /etc/docker
@@ -241,62 +254,54 @@ sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
 }
 JSON
 sudo systemctl restart docker
-```
-
-เช็กว่าใช้ได้:
-
-```bash
 docker info | grep -A5 "Registry Mirrors"
-```
-
-จากนั้นลอง pull:
-
-```bash
 docker pull alpine:latest
 ```
 
-## วิธีเข้าใช้งานครั้งแรก
+แนวทางนี้ทำให้ได้ private Docker Hub cache และ internal container registry acceleration โดยไม่ต้องบังคับให้ traffic ของ mirror ไปผ่าน reverse proxy หรือ CDN
+
+## First Login
 
 ถ้าเป็นการติดตั้งครั้งแรก `install.sh` จะถาม:
 
 - bootstrap username
 - bootstrap password
 
-ถ้ากด Enter ไม่ใส่ password ระบบจะ generate ให้และบังคับเปลี่ยนรหัสผ่านหลัง login ครั้งแรก
+ถ้ากด Enter ตอน password ระบบจะ generate password ให้ และบังคับเปลี่ยนรหัสหลัง login ครั้งแรก
 
-หลังทุกอย่างพร้อม:
+จุดเข้าใช้งานหลัก:
 
 - Registry mirror: `http://YOUR_SERVER_IP:5000`
-- Web UI: `https://YOUR_CONTROL_HOSTNAME/login`
-- Local health ของ control: `http://127.0.0.1:8080/healthz`
+- Control UI: `https://YOUR_CONTROL_HOSTNAME/login`
+- Local health check: `http://127.0.0.1:8080/healthz`
 
-## คำสั่งใช้งานประจำ
+## Daily Operations
 
-ดู container:
+ดูสถานะบริการ:
 
 ```bash
 sudo docker compose ps
 ```
 
-ดู log control:
+ดู log ของ control plane:
 
 ```bash
 sudo docker compose logs -f control
 ```
 
-ดู log GC worker:
+ดู log ของ garbage collection worker:
 
 ```bash
 sudo docker compose logs -f gc-worker
 ```
 
-ดู log registry:
+ดู log ของ registry mirror:
 
 ```bash
 sudo docker compose logs -f registry
 ```
 
-build/restart ใหม่:
+build หรือ restart ใหม่:
 
 ```bash
 sudo docker compose up -d --build
@@ -308,34 +313,27 @@ sudo docker compose up -d --build
 sudo docker compose down
 ```
 
-เริ่มใหม่:
+เริ่ม stack อีกครั้ง:
 
 ```bash
 sudo docker compose up -d
 ```
 
-## วิธีอัปเดตจาก GitHub
-
-เข้าโฟลเดอร์โปรเจกต์แล้วรัน:
+## Updating from GitHub
 
 ```bash
 cd ~/docker-registry-mirror-stack
 git pull origin main
 sudo docker compose up -d --build
-```
-
-เช็กสถานะหลังอัปเดต:
-
-```bash
 sudo docker compose ps
 sudo docker compose logs --tail=100 control
 sudo docker compose logs --tail=100 gc-worker
 sudo docker compose logs --tail=100 registry
 ```
 
-## ถ้าจะปรับ policy cleanup
+## Cleanup and Garbage Collection Policy
 
-ค่าหลักอยู่ใน `.env`:
+ค่าที่ใช้บ่อยใน `.env`:
 
 ```env
 DRY_RUN=false
@@ -351,39 +349,51 @@ GC_HOUR_UTC=19
 
 ความหมายแบบใช้งานจริง:
 
-- `UNUSED_DAYS` คือไม่ค่อยได้ใช้กี่วันถึงเริ่มเข้าเกณฑ์ลบ
-- `MIN_CACHE_AGE_DAYS` คือ image ใหม่เกินไปอย่าเพิ่งลบ
-- `LOW_WATERMARK_PCT` คือต่ำกว่านี้เริ่มต้องคิดเรื่อง cleanup
+- `UNUSED_DAYS` คือ artifact ไม่ค่อยได้ใช้กี่วันถึงเริ่มเข้าเกณฑ์ลบ
+- `MIN_CACHE_AGE_DAYS` คือ artifact ใหม่เกินไปอย่าเพิ่งลบ
+- `LOW_WATERMARK_PCT` คือระดับพื้นที่ว่างที่เริ่มต้องคิดเรื่อง cleanup
 - `TARGET_FREE_PCT` คือเป้าหมายพื้นที่ว่างหลัง cleanup
-- `EMERGENCY_FREE_PCT` คือโหมดฉุกเฉิน พื้นที่ต่ำมาก
-- `DRY_RUN=true` ใช้ทดสอบ policy โดยยังไม่ลบจริง
+- `EMERGENCY_FREE_PCT` คือโหมด storage emergency
+- `DRY_RUN=true` ใช้ทดสอบ registry cleanup policy โดยยังไม่ลบจริง
 
-แก้เสร็จแล้วให้ apply:
+ถ้าปรับค่าแล้ว:
 
 ```bash
 sudo docker compose up -d --build
 ```
 
-## สิ่งที่ระบบป้องกันให้แล้ว
+## Common Use Cases
 
-- `/notifications` รับเฉพาะ request ที่ auth ผ่าน
-- `push`, `pull`, `delete` event ถูกแยก logic แล้ว
-- `delete` event จะ mark ลบ ไม่ชุบ artifact กลับมาเอง
+โปรเจกต์นี้เหมาะกับกรณีแบบนี้:
+
+- ต้องการ Docker Registry Mirror สำหรับ office network หรือ private datacenter
+- ต้องการ Docker Hub cache สำหรับ CI/CD runners
+- ต้องการ self-hosted container image cache แทนการ pull ออก internet ตรงทุกครั้ง
+- ต้องการ internal registry proxy cache ที่มี cleanup, logs, maintenance, และ GC workflow
+- ต้องการ private Docker mirror ที่ยังเร็วแบบ `IP:PORT` แต่ฝั่ง control ปลอดภัยขึ้น
+
+## Operational Safety
+
+สิ่งที่ระบบช่วยป้องกันให้แล้ว:
+
+- `/notifications` รับเฉพาะ authenticated request
+- `push`, `pull`, และ `delete` event ถูกแยก logic ชัดเจน
+- `delete` event จะ mark ลบ ไม่ resurrect artifact
 - GC ทำใน `gc-worker`
-- control ไม่มี `docker.sock`
-- control default ไม่ bind ออก LAN
+- Control plane ไม่มี `docker.sock`
+- Control plane default ไม่ bind ออก LAN
 
-## สิ่งที่ยังควรระวังเอง
+สิ่งที่ยังควรระวังเอง:
 
 - อย่า expose `control` ออก internet ตรง ๆ
-- อย่าตั้ง `COOKIE_SECURE=false` ถ้าไม่ได้จำเป็นจริง
-- อย่าตั้ง `PUBLIC_BASE_URL` เป็น `http://...` เว้นแต่ตั้งใจยอมรับความเสี่ยง
-- ถ้าจะเปิด control แบบไม่ secure ต้องตั้ง `ALLOW_INSECURE_CONTROL=true` เองอย่างชัดเจน
-- ถ้าเป็นเครื่องหลายคนใช้ร่วมกัน ควรจำกัด firewall ให้เข้าถึง port `5000` เฉพาะวงที่ต้องใช้
+- อย่าปิด `COOKIE_SECURE` ถ้าไม่ได้จำเป็นจริง
+- อย่าตั้ง `PUBLIC_BASE_URL` เป็น `http://...` ถ้าไม่ได้ตั้งใจยอมรับความเสี่ยง
+- ถ้าจะเปิด control แบบ insecure ต้องตั้ง `ALLOW_INSECURE_CONTROL=true` เองอย่างชัดเจน
+- ควรจำกัด firewall ของ port `5000` ให้ตรงวง client ที่ต้องใช้จริง
 
-## เช็กลิสต์หลังติดตั้ง
+## Verification Checklist
 
-รันตามนี้ทีละบรรทัด:
+หลังติดตั้งหรือหลังอัปเดต ให้รัน:
 
 ```bash
 cd ~/docker-registry-mirror-stack
@@ -394,23 +404,21 @@ sudo docker compose logs --tail=50 gc-worker
 sudo docker compose logs --tail=50 registry
 ```
 
-ถ้าใช้ reverse proxy แล้ว ให้เช็กเพิ่ม:
+ถ้ามี reverse proxy:
 
 ```bash
 curl -kI https://YOUR_CONTROL_HOSTNAME/login
 ```
 
-ถ้า mirror เปิดให้ client ใช้งานแล้ว ให้เช็กจาก client:
+ถ้ามี Docker client ที่ตั้ง mirror แล้ว:
 
 ```bash
 docker pull alpine:latest
 ```
 
-## ปัญหาที่เจอบ่อย
+## Troubleshooting
 
-### เปิดหน้า control ไม่ได้
-
-เช็ก:
+### Control UI เปิดไม่ได้
 
 ```bash
 sudo docker compose ps
@@ -418,11 +426,11 @@ sudo docker compose logs --tail=100 control
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-### เข้า UI แล้วโดนเด้งเรื่อง cookie/origin
+### Login แล้วเจอปัญหา cookie หรือ origin
 
 มักเกิดจาก `PUBLIC_BASE_URL` ไม่ตรงกับ URL จริงหลัง reverse proxy
 
-แก้ `.env` ให้ตรง เช่น:
+ตั้งให้ตรง เช่น:
 
 ```env
 PUBLIC_BASE_URL=https://registry-control.internal.example
@@ -434,40 +442,40 @@ PUBLIC_BASE_URL=https://registry-control.internal.example
 sudo docker compose up -d --build
 ```
 
-### Docker client ไม่ใช้ mirror
-
-เช็กไฟล์:
+### Docker client ไม่ใช้ registry mirror
 
 ```bash
 cat /etc/docker/daemon.json
 docker info | grep -A5 "Registry Mirrors"
-```
-
-แล้ว restart Docker:
-
-```bash
 sudo systemctl restart docker
 ```
 
-### อยากล้างทุกอย่างแล้วเริ่มใหม่
+### อยากล้างแล้วเริ่มใหม่
 
-คำสั่งนี้จะลบ container แต่ยังไม่ลบ volume:
+หยุด stack ก่อน:
 
 ```bash
 sudo docker compose down
 ```
 
-ถ้าจะลบ data ถาวรด้วย ต้องระวังมาก:
+ถ้าจะลบ data ถาวรด้วย ใช้อย่างระวัง:
 
 ```bash
 sudo docker compose down -v
 rm -rf metadata state
 ```
 
-คำสั่งนี้จะทำให้ metadata และ state หาย ใช้เฉพาะตอนตั้งใจเริ่มใหม่จริง ๆ
+คำสั่งนี้จะลบ metadata และ state ที่เก็บไว้ ใช้เฉพาะตอนตั้งใจ reset จริง ๆ
 
-## ไฟล์สำคัญ
+## Control UI Visibility
 
+README อธิบายภาพรวมของระบบ, วิธีติดตั้ง, และกรณีใช้งานที่พบบ่อยให้ครบในภาษาที่อ่านง่ายตามการใช้งานจริง
+
+ส่วน control UI ถูกตั้งให้ส่ง `noindex` และ `robots.txt` แบบ block ไว้แล้ว เพราะเป็นหน้า operator ภายในที่ควรเข้าถึงผ่านลิงก์ตรงและสิทธิ์ที่เหมาะสมเท่านั้น
+
+## Important Files
+
+- [README.md](/c:/Users/n/Downloads/registry-mirror-stack/README.md)
 - [docker-compose.yml](/c:/Users/n/Downloads/registry-mirror-stack/docker-compose.yml)
 - [.env.example](/c:/Users/n/Downloads/registry-mirror-stack/.env.example)
 - [install.sh](/c:/Users/n/Downloads/registry-mirror-stack/install.sh)

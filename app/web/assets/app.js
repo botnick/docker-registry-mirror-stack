@@ -2,10 +2,35 @@ const root = document.getElementById("page-root");
 const flash = document.getElementById("flash-message");
 const pageId = document.body.dataset.page;
 const csrfToken = document.body.dataset.csrf || "";
+const navToggle = document.getElementById("nav-toggle");
+const navClose = document.getElementById("nav-close");
+const navOverlay = document.getElementById("nav-overlay");
 let liveTimer = null;
 
 document.querySelectorAll("[data-nav]").forEach((link) => {
   if (link.dataset.nav === pageId) link.classList.add("is-active");
+});
+
+function setNavOpen(open) {
+  document.body.classList.toggle("nav-open", open);
+  navToggle?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+navToggle?.addEventListener("click", () => setNavOpen(!document.body.classList.contains("nav-open")));
+navClose?.addEventListener("click", () => setNavOpen(false));
+navOverlay?.addEventListener("click", () => setNavOpen(false));
+document.querySelectorAll(".nav a").forEach((link) => {
+  link.addEventListener("click", () => {
+    if (window.innerWidth <= 1080) setNavOpen(false);
+  });
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setNavOpen(false);
+});
+
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 1080) setNavOpen(false);
 });
 
 document.getElementById("refresh-page")?.addEventListener("click", () => window.__pageReload?.());
@@ -18,7 +43,10 @@ document.getElementById("logout-button")?.addEventListener("click", async () => 
   window.location.href = "/login";
 });
 
-window.addEventListener("popstate", () => window.__pageReload?.());
+window.addEventListener("popstate", () => {
+  setNavOpen(false);
+  window.__pageReload?.();
+});
 
 function stopLiveTimer() {
   if (liveTimer) clearInterval(liveTimer);
@@ -41,6 +69,19 @@ function showFlash(message, kind = "success") {
 function clearFlash() {
   flash.textContent = "";
   flash.className = "flash hidden";
+}
+
+function enhanceTables(container = document) {
+  container.querySelectorAll(".table-wrap table").forEach((table) => {
+    table.classList.add("responsive-table");
+    const headers = [...table.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    table.querySelectorAll("tbody tr").forEach((row) => {
+      [...row.children].forEach((cell, index) => {
+        if (cell.tagName !== "TD" || cell.hasAttribute("colspan")) return;
+        cell.dataset.label = headers[index] || "";
+      });
+    });
+  });
 }
 
 async function api(url, options = {}) {
@@ -300,14 +341,14 @@ async function renderArtifacts() {
   const data = await api(`/api/artifacts?limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}&state=${encodeURIComponent(state)}&pinned=${encodeURIComponent(pinned)}&protected=${encodeURIComponent(protectedOnly)}`);
   const rows = (data.items || []).map((item) => `
     <tr>
-      <td><a href="/artifact?repo=${encodeURIComponent(item.repo)}&digest=${encodeURIComponent(item.digest)}"><strong>${esc(item.repo)}</strong></a></td>
-      <td>${esc(item.tag || "-")}</td>
-      <td class="mono">${esc(item.digest.slice(0, 24))}...</td>
-      <td>${fmtBytes(item.size_bytes)}</td>
-      <td>${item.use_count || 0}</td>
-      <td>${fmtTime(item.last_used_at)}</td>
-      <td>${badgeSet(item)}</td>
-      <td>
+      <td class="cell-repo"><a href="/artifact?repo=${encodeURIComponent(item.repo)}&digest=${encodeURIComponent(item.digest)}"><strong>${esc(item.repo)}</strong></a></td>
+      <td class="cell-tag">${esc(item.tag || "-")}</td>
+      <td class="mono cell-digest">${esc(item.digest)}</td>
+      <td class="cell-numeric">${fmtBytes(item.size_bytes)}</td>
+      <td class="cell-numeric">${item.use_count || 0}</td>
+      <td class="cell-date">${fmtTime(item.last_used_at)}</td>
+      <td class="cell-status">${badgeSet(item)}</td>
+      <td class="cell-actions">
         <div class="inline-actions">
           <button class="ghost-button" data-pin="${item.pinned ? 0 : 1}" data-repo="${esc(item.repo)}" data-digest="${esc(item.digest)}">${item.pinned ? "Unpin" : "Pin"}</button>
           <button class="ghost-button" data-protect="${item.explicit_protected ? 0 : 1}" data-repo="${esc(item.repo)}" data-digest="${esc(item.digest)}">${item.explicit_protected ? "Unprotect" : "Protect"}</button>
@@ -426,12 +467,12 @@ async function renderEvents() {
   const data = await api(`/api/events?limit=${limit}&offset=${offset}&include_raw=${includeRaw}`);
   const rows = (data.items || []).map((item) => `
     <tr>
-      <td class="mono">${item.id}</td>
-      <td>${fmtTime(item.received_at)}</td>
+      <td class="mono cell-numeric">${item.id}</td>
+      <td class="cell-date">${fmtTime(item.received_at)}</td>
       <td>${esc(item.action || "-")}</td>
-      <td>${esc(item.repo || "-")}</td>
-      <td>${esc(item.tag || "-")}</td>
-      <td class="mono">${esc(item.digest || "-")}</td>
+      <td class="cell-repo">${esc(item.repo || "-")}</td>
+      <td class="cell-tag">${esc(item.tag || "-")}</td>
+      <td class="mono cell-digest">${esc(item.digest || "-")}</td>
       <td>${includeRaw ? `<details><summary>raw</summary>${jsonBlock(item.raw_json)}</details>` : '<span class="muted">ปิด raw</span>'}</td>
     </tr>`).join("");
   root.innerHTML = `
@@ -804,6 +845,7 @@ async function renderLogs() {
       const empty = tbody.querySelector(".empty-state");
       if (empty) tbody.innerHTML = "";
       tbody.insertAdjacentHTML("afterbegin", renderLogRows(next.items));
+      enhanceTables(root);
       while (tbody.children.length > 200) tbody.removeChild(tbody.lastElementChild);
     }, 4000);
   }
@@ -924,6 +966,7 @@ window.__pageReload = async () => {
   }
   try {
     await renderer();
+    enhanceTables(root);
   } catch (error) {
     console.error(error);
     root.innerHTML = `<div class="empty-state">โหลดข้อมูลไม่สำเร็จ กรุณาลองอีกครั้ง</div>`;
