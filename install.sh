@@ -10,6 +10,15 @@ OS_LIKE=""
 OS_PRETTY_NAME="Linux"
 PKG_MANAGER=""
 COMPOSE_COMMAND_LABEL=""
+INSTALL_MODE=""
+AUTO_SETUP="false"
+ENV_CREATED="false"
+DETECTED_SERVER_IP=""
+FIRST_BOOTSTRAP="false"
+GENERATED_PASSWORD="false"
+FORCE_PASSWORD_CHANGE="false"
+BOOTSTRAP_USERNAME="admin"
+BOOTSTRAP_PASSWORD=""
 
 if [[ "${EUID}" -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
@@ -22,6 +31,56 @@ fi
 
 log() {
   printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$1"
+}
+
+show_help() {
+  cat <<'EOF'
+Registry Mirror Stack installer
+
+Usage:
+  sudo ./install.sh [--lan|--proxy] [--auto]
+
+Options:
+  --lan, --direct-http
+      Easiest mode. Exposes the control UI directly on http://SERVER_IP:8080
+      for internal-network use, and configures cookies for direct HTTP.
+
+  --proxy, --https
+      Keeps the control UI bound to 127.0.0.1 for use behind an HTTPS reverse proxy.
+
+  --auto, --yes, --non-interactive
+      Skip prompts and auto-generate the first admin password.
+      If no mode is specified, --lan is used on first install.
+
+  -h, --help
+      Show this help text.
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --lan|--direct-http)
+        INSTALL_MODE="lan"
+        ;;
+      --proxy|--https)
+        INSTALL_MODE="proxy"
+        ;;
+      --auto|--yes|--non-interactive)
+        AUTO_SETUP="true"
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1"
+        echo "Run ./install.sh --help to see available options."
+        exit 1
+        ;;
+    esac
+    shift
+  done
 }
 
 command_exists() {
@@ -401,6 +460,7 @@ rand_string() {
 ensure_env_file() {
   if [[ ! -f .env ]]; then
     cp .env.example .env
+    ENV_CREATED="true"
   fi
 }
 
@@ -429,6 +489,85 @@ detect_server_ip() {
   if command_exists ip; then
     ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for (i = 1; i <= NF; i++) if ($i == "src") {print $(i+1); exit}}'
   fi
+}
+
+choose_install_mode() {
+  if [[ -n "$INSTALL_MODE" ]]; then
+    return 0
+  fi
+
+  if [[ "$FIRST_BOOTSTRAP" != "true" ]]; then
+    INSTALL_MODE="keep"
+    return 0
+  fi
+
+  if [[ "$AUTO_SETUP" == "true" || ! -t 0 || ! -t 1 ]]; then
+    INSTALL_MODE="lan"
+    return 0
+  fi
+
+  cat <<'EOF'
+
+Choose how you want to open the control UI:
+  1) Direct HTTP on the server IP (easiest, internal network only)
+  2) HTTPS behind reverse proxy (recommended if you already have a domain/proxy)
+EOF
+
+  local choice=""
+  read -r -p "Choose [1/2] [1]: " choice
+  case "$choice" in
+    ""|1)
+      INSTALL_MODE="lan"
+      ;;
+    2)
+      INSTALL_MODE="proxy"
+      ;;
+    *)
+      echo "Invalid choice. Please run the installer again and choose 1 or 2."
+      exit 1
+      ;;
+  esac
+}
+
+configure_access_mode() {
+  local control_port current_public
+  control_port="$(read_env_value CONTROL_PORT)"
+  control_port="${control_port:-8080}"
+  DETECTED_SERVER_IP="${DETECTED_SERVER_IP:-$(detect_server_ip || true)}"
+
+  choose_install_mode
+
+  case "$INSTALL_MODE" in
+    keep)
+      log "Keeping the current control UI access settings in .env"
+      return 0
+      ;;
+    lan)
+      log "Configuring the control UI for direct HTTP access on the server IP"
+      set_env_value CONTROL_BIND_ADDRESS "0.0.0.0"
+      if [[ -n "$DETECTED_SERVER_IP" ]]; then
+        set_env_value PUBLIC_BASE_URL "http://${DETECTED_SERVER_IP}:${control_port}"
+      fi
+      set_env_value COOKIE_SECURE "false"
+      set_env_value ALLOW_INSECURE_CONTROL "true"
+      set_env_value TRUST_PROXY_HEADERS "false"
+      ;;
+    proxy)
+      log "Configuring the control UI for HTTPS reverse proxy mode"
+      current_public="$(read_env_value PUBLIC_BASE_URL)"
+      set_env_value CONTROL_BIND_ADDRESS "127.0.0.1"
+      if [[ -z "$current_public" || "$current_public" == http://* ]]; then
+        set_env_value PUBLIC_BASE_URL ""
+      fi
+      set_env_value COOKIE_SECURE "true"
+      set_env_value ALLOW_INSECURE_CONTROL "false"
+      set_env_value TRUST_PROXY_HEADERS "true"
+      ;;
+    *)
+      echo "Unsupported install mode: ${INSTALL_MODE}"
+      exit 1
+      ;;
+  esac
 }
 
 wait_for_http() {
@@ -469,6 +608,14 @@ prompt_bootstrap_credentials() {
   local input_user=""
   local password_one=""
   local password_two=""
+
+  if [[ "$AUTO_SETUP" == "true" || ! -t 0 || ! -t 1 ]]; then
+    GENERATED_PASSWORD="true"
+    BOOTSTRAP_USERNAME="$default_user"
+    BOOTSTRAP_PASSWORD="$(rand_string 24)"
+    FORCE_PASSWORD_CHANGE="true"
+    return 0
+  fi
 
   read -r -p "Bootstrap admin username [${default_user}]: " input_user
   BOOTSTRAP_USERNAME="${input_user:-$default_user}"
@@ -558,6 +705,7 @@ start_stack() {
 
 print_summary() {
   local control_port registry_port public_base_url health_url healthy restart_hint control_bind
+  local server_ip mirror_host control_url mirror_url control_health_url
   control_port="$(read_env_value CONTROL_PORT)"
   registry_port="$(read_env_value REGISTRY_PORT)"
   public_base_url="$(read_env_value PUBLIC_BASE_URL)"
@@ -566,7 +714,22 @@ print_summary() {
   control_port="${control_port:-8080}"
   registry_port="${registry_port:-5000}"
   control_bind="${control_bind:-127.0.0.1}"
-  public_base_url="${public_base_url:-https://YOUR_CONTROL_HOSTNAME}"
+  DETECTED_SERVER_IP="${DETECTED_SERVER_IP:-$(detect_server_ip || true)}"
+  server_ip="${DETECTED_SERVER_IP:-YOUR_SERVER_IP}"
+  mirror_host="$server_ip"
+  mirror_url="http://${mirror_host}:${registry_port}"
+
+  if [[ -n "$public_base_url" ]]; then
+    control_url="${public_base_url}/login"
+    control_health_url="${public_base_url}/healthz"
+  elif [[ "$INSTALL_MODE" == "lan" ]]; then
+    control_url="http://${server_ip}:${control_port}/login"
+    control_health_url="http://${server_ip}:${control_port}/healthz"
+  else
+    control_url="http://127.0.0.1:${control_port}/login"
+    control_health_url="http://127.0.0.1:${control_port}/healthz"
+  fi
+
   health_url="http://127.0.0.1:${control_port}/healthz"
   healthy="false"
 
@@ -593,16 +756,16 @@ Compose command:
   ${COMPOSE_COMMAND_LABEL}
 
 Registry mirror:
-  http://YOUR_SERVER_IP:${registry_port}
+  ${mirror_url}
 
 Control bind:
   ${control_bind}:${control_port}
 
-Web UI / API behind reverse proxy:
-  ${public_base_url}/login
+Control UI:
+  ${control_url}
 
 Health check:
-  ${public_base_url}/healthz
+  ${control_health_url}
 
 Useful commands:
   cd ${ROOT_DIR}
@@ -656,33 +819,50 @@ Docker daemon mirror example on your client machine:
   sudo mkdir -p /etc/docker
   sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
   {
-    "registry-mirrors": ["http://YOUR_SERVER_IP:${registry_port}"]
+    "registry-mirrors": ["${mirror_url}"]
   }
   JSON
   ${restart_hint}
 
 Control plane hardening defaults:
-  - bound to 127.0.0.1 by default
-  - secure cookies enabled by default
   - registry notifications require authentication
   - garbage collection runs in the dedicated gc-worker service without docker.sock access
+  - Docker Hub, GHCR, and Quay are ready out of the box
 
-Expose the Web UI only through an HTTPS reverse proxy.
 The router on http://IP:PORT serves Docker Hub by mirror semantics and also accepts host-prefixed pulls for:
-  - GHCR: http://YOUR_SERVER_IP:${registry_port}/ghcr.io/pterodactyl/yolks:java_21
-  - Quay: http://YOUR_SERVER_IP:${registry_port}/quay.io/pterodactyl/yolks:java_11
-
-If you intentionally want the control UI on direct HTTP too, set these in .env and rebuild:
-  PUBLIC_BASE_URL=http://YOUR_SERVER_IP:${control_port}
-  COOKIE_SECURE=false
-  ALLOW_INSECURE_CONTROL=true
-  TRUST_PROXY_HEADERS=false
+  - GHCR: ${mirror_url}/ghcr.io/pterodactyl/yolks:java_21
+  - Quay: ${mirror_url}/quay.io/pterodactyl/yolks:java_11
 
 If you were just added to the docker group, reconnect your SSH session once before using docker without sudo.
 EOF
+
+  if [[ "$INSTALL_MODE" == "lan" ]]; then
+    cat <<EOF
+
+Easy mode is enabled for the control UI:
+  - control UI listens on http://${server_ip}:${control_port}
+  - cookies are configured for direct HTTP
+  - this mode is intended for internal-network use only
+
+If you later want HTTPS behind a reverse proxy, rerun:
+  sudo ./install.sh --proxy
+EOF
+  else
+    cat <<EOF
+
+Reverse-proxy mode is enabled for the control UI:
+  - control UI stays on 127.0.0.1:${control_port}
+  - secure cookies stay enabled
+  - add your HTTPS reverse proxy, then set PUBLIC_BASE_URL if needed
+
+If you later want the easiest direct-HTTP internal mode, rerun:
+  sudo ./install.sh --lan
+EOF
+  fi
 }
 
 main() {
+  parse_args "$@"
   detect_linux_env
   update_upgrade_system
   install_base_packages
@@ -690,6 +870,7 @@ main() {
   configure_docker_group
   prepare_runtime
   bootstrap_credentials_if_needed
+  configure_access_mode
   start_stack
   print_summary
 }

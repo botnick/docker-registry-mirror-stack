@@ -122,14 +122,27 @@ Registry Mirror Stack is a self-hosted Docker registry mirror for teams that wan
 
 ## Quick Start
 
-บนเครื่อง Linux ปลายทาง:
+ถ้าต้องการแบบง่ายสุด ใช้ `IP:8080` เป็นหลักก่อน และให้ installer สร้าง admin password ให้อัตโนมัติ:
 
 ```bash
 ssh your-user@YOUR_SERVER_IP
 git clone https://github.com/botnick/docker-registry-mirror-stack.git
 cd docker-registry-mirror-stack
 chmod +x install.sh
-sudo ./install.sh
+sudo ./install.sh --lan --auto
+```
+
+หลังรันจบ คุณจะได้:
+
+- Registry mirror: `http://YOUR_SERVER_IP:5000`
+- Control UI: `http://YOUR_SERVER_IP:8080/login`
+- Admin user: `admin`
+- Admin password: installer จะพิมพ์ให้ใน terminal ตอนติดตั้ง
+
+ถ้าคุณมี reverse proxy / HTTPS อยู่แล้ว และอยากให้ control UI อยู่หลัง proxy ตั้งแต่แรก:
+
+```bash
+sudo ./install.sh --proxy
 ```
 
 ตัว installer จะ:
@@ -137,7 +150,7 @@ sudo ./install.sh
 1. ตรวจ distro และติดตั้ง Docker / Compose
 2. สร้าง `.env` จาก `.env.example` ถ้ายังไม่มี
 3. generate `SESSION_SECRET` และ `NOTIFICATIONS_PASSWORD`
-4. ถ้าเป็นครั้งแรก จะถาม bootstrap admin
+4. ถ้าเป็นครั้งแรก จะถาม bootstrap admin หรือ generate ให้อัตโนมัติเมื่อใช้ `--auto`
 5. build และรัน `router`, `registry-dockerhub`, `registry-ghcr`, `registry-quay`, `control`, `gc-worker`
 
 หลังติดตั้งเสร็จ ให้เช็ก:
@@ -252,6 +265,14 @@ sudo docker compose up -d --build
 
 ถ้าคุณตั้งใจจะเปิดหน้า control ตรงแบบ `http://IP:8080` ภายในจริง ๆ ก็ทำได้ แต่ต้องปิด secure cookie ให้ตรงกับวิธีเข้าใช้งาน ไม่เช่นนั้นจะเกิดอาการ login ผ่านแต่ browser ไม่เก็บ session และหน้า `/force-password` หรือ `/dashboard` จะเข้าไม่ได้
 
+ถ้าใช้ installer แบบง่าย:
+
+```bash
+sudo ./install.sh --lan --auto
+```
+
+installer จะตั้งค่านี้ให้ให้อัตโนมัติอยู่แล้ว
+
 ตั้งค่าใน `.env` แบบนี้:
 
 ```env
@@ -305,6 +326,50 @@ docker pull alpine:latest
 
 แนวทางนี้ทำให้ได้ private Docker Hub cache โดยไม่ต้องบังคับให้ traffic ของ mirror ไปผ่าน reverse proxy หรือ CDN
 
+## Client Helper Script
+
+ถ้าต้องการสคริปต์ฝั่ง client แบบ `apply / rollback / status` ที่ copy paste ไปใช้ได้เลย:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botnick/docker-registry-mirror-stack/main/scripts/docker-registry-mirror-manager.sh -o /tmp/docker-registry-mirror-manager.sh
+chmod +x /tmp/docker-registry-mirror-manager.sh
+sudo /tmp/docker-registry-mirror-manager.sh apply \
+  --mirror-url http://YOUR_SERVER_IP:5000 \
+  --control-url http://YOUR_SERVER_IP:8080
+```
+
+ถ้าต้องการตั้งแบบมี rollback อัตโนมัติตามเวลา:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botnick/docker-registry-mirror-stack/main/scripts/docker-registry-mirror-manager.sh -o /tmp/docker-registry-mirror-manager.sh
+chmod +x /tmp/docker-registry-mirror-manager.sh
+sudo /tmp/docker-registry-mirror-manager.sh apply \
+  --mirror-url http://YOUR_SERVER_IP:5000 \
+  --control-url http://YOUR_SERVER_IP:8080 \
+  --rollback-at "2026-04-08 12:00:00" \
+  --timezone Asia/Bangkok
+```
+
+เช็กสถานะ:
+
+```bash
+sudo /usr/local/sbin/docker-registry-mirror-manager.sh status
+```
+
+rollback ทันที:
+
+```bash
+sudo /usr/local/sbin/docker-registry-mirror-manager.sh rollback
+```
+
+script นี้จะ:
+
+- backup `/etc/docker/daemon.json` เดิม
+- เพิ่ม `registry-mirrors` ให้แบบ merge JSON อย่างปลอดภัย
+- restart Docker และเช็กว่า mirror ถูกใช้งานจริง
+- ถ้าระบุ `--rollback-at` จะตั้ง schedule rollback ให้อัตโนมัติ
+- copy ตัวเองไปไว้ที่ `/usr/local/sbin/docker-registry-mirror-manager.sh` เพื่อใช้ `status` และ `rollback` ภายหลังได้ง่าย
+
 ## Multi-Upstream Pulls
 
 สำหรับ registry ที่ไม่ใช่ Docker Hub ให้เรียกผ่าน router host โดยใส่ registry host เดิมไว้ใน path:
@@ -353,7 +418,8 @@ quay.io/pterodactyl/yolks:java_8
 จุดเข้าใช้งานหลัก:
 
 - Registry mirror: `http://YOUR_SERVER_IP:5000`
-- Control UI: `https://YOUR_CONTROL_HOSTNAME/login`
+- Control UI แบบง่าย: `http://YOUR_SERVER_IP:8080/login`
+- Control UI หลัง reverse proxy: `https://YOUR_CONTROL_HOSTNAME/login`
 - Local health check: `http://127.0.0.1:8080/healthz`
 
 ## Daily Operations
