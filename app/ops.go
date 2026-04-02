@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -68,6 +67,7 @@ func (a *App) buildOverview(ctx context.Context) (map[string]any, error) {
 		},
 		"registry":    fallback.Registry,
 		"upstream":    fallback.Upstream,
+		"upstreams":   fallback.Targets,
 		"fallback":    fallback,
 		"maintenance": maintenance,
 		"storage":     fallback.Storage,
@@ -82,6 +82,7 @@ func (a *App) buildOverview(ctx context.Context) (map[string]any, error) {
 			"session_ttl_hours":      int(a.cfg.SessionTTL.Hours()),
 			"notifications_username": a.cfg.NotificationsUsername,
 			"trust_proxy_headers":    a.cfg.TrustProxyHeaders,
+			"configured_upstreams":   a.cfg.TargetHostList(),
 		},
 	}, nil
 }
@@ -146,34 +147,28 @@ func (a *App) policySnapshot() map[string]any {
 }
 
 func (a *App) refreshFallbackStatus(ctx context.Context) (FallbackStatus, error) {
-	registryProbe := a.probeHTTP(ctx, "registry", a.cfg.RegistryURL+"/v2/", a.cfg.UpstreamTimeout)
-	upstreamProbe := a.probeHTTP(ctx, "upstream", a.cfg.UpstreamURL, a.cfg.UpstreamTimeout)
-	diskStats, diskErr := getDiskStats(a.cfg.RegistryDataPath)
+	targetStatuses := a.collectUpstreamStatuses(ctx)
+	storage := aggregateStorage(targetStatuses, a.cfg.LowWatermarkPct, a.cfg.EmergencyFreePct, a.cfg.TargetFreePct)
 	maintenance, _ := a.getMaintenanceState(ctx)
 	signals := a.operationSnapshot()
 
-	storage := map[string]any{
-		"path":               a.cfg.RegistryDataPath,
-		"gc_request_pending": a.gcRequested(),
-	}
-	if diskErr != nil {
-		storage["disk_error"] = diskErr.Error()
-	} else {
-		storage["total_bytes"] = diskStats.TotalBytes
-		storage["used_bytes"] = diskStats.UsedBytes
-		storage["free_bytes"] = diskStats.FreeBytes
-		storage["used_pct"] = roundFloat(diskStats.UsedPercent)
-		storage["free_pct"] = roundFloat(diskStats.FreePercent)
-		storage["pressure"] = diskStats.FreePercent < float64(a.cfg.LowWatermarkPct)
-		storage["emergency"] = diskStats.FreePercent < float64(a.cfg.EmergencyFreePct)
-		storage["bytes_to_target"] = bytesToTarget(diskStats.TotalBytes, diskStats.FreeBytes, a.cfg.TargetFreePct)
-	}
-
 	state := "normal"
 	summary := "ready"
-	details := "mirror and upstream are reachable"
-	cachedModeUsable := registryProbe.Healthy
+	details := "all configured registry caches and upstreams are reachable"
+	cachedModeUsable := false
 	destructivePaused := false
+	registryProbe := HealthProbe{}
+	upstreamProbe := HealthProbe{}
+	if len(targetStatuses) > 0 {
+		registryProbe = targetStatuses[0].Registry
+		upstreamProbe = targetStatuses[0].Upstream
+	}
+	for _, status := range targetStatuses {
+		if status.Registry.Healthy {
+			cachedModeUsable = true
+			break
+		}
+	}
 
 	switch {
 	case maintenance.MaintenanceMode || signals["gc_running"]:
@@ -181,24 +176,26 @@ func (a *App) refreshFallbackStatus(ctx context.Context) (FallbackStatus, error)
 		summary = "maintenance mode active"
 		details = "destructive operations are paused while maintenance or GC is active"
 		destructivePaused = true
-	case !registryProbe.Healthy:
+	case firstUnhealthyRegistry(targetStatuses).Host != "":
+		target := firstUnhealthyRegistry(targetStatuses)
 		state = "mirror-degraded"
-		summary = "registry mirror is unhealthy"
-		details = "check the registry service before continuing with cleanup or GC"
+		summary = target.DisplayName + " cache is unhealthy"
+		details = "check " + target.Host + " before continuing with cleanup or GC"
 		destructivePaused = true
-	case !upstreamProbe.Healthy:
+	case firstUnhealthyUpstream(targetStatuses).Host != "":
+		target := firstUnhealthyUpstream(targetStatuses)
 		state = "upstream-degraded"
-		summary = "upstream registry is degraded"
-		details = "cached artifacts can still be served, but cache misses may fail"
+		summary = target.DisplayName + " upstream is degraded"
+		details = "cached artifacts can still be served, but cache misses for " + target.Host + " may fail"
 		destructivePaused = true
 	case storageBool(storage, "emergency"):
 		state = "storage-emergency"
-		summary = "storage is critically low"
-		details = "review cleanup candidates or extend capacity immediately"
+		summary = "cache storage is critically low"
+		details = "review cleanup candidates across the configured upstream caches or extend capacity immediately"
 	case storageBool(storage, "pressure"):
 		state = "storage-pressure"
-		summary = "storage is below the low watermark"
-		details = "cleanup should be reviewed soon"
+		summary = "cache storage is below the low watermark"
+		details = "cleanup should be reviewed soon for the configured upstream caches"
 	}
 
 	if maintenance.JanitorPaused || maintenance.GCPaused {
@@ -224,6 +221,7 @@ func (a *App) refreshFallbackStatus(ctx context.Context) (FallbackStatus, error)
 			"gc_running":       signals["gc_running"],
 			"janitor_running":  signals["janitor_running"],
 		},
+		Targets: targetStatuses,
 	}
 
 	a.fallbackMu.Lock()
@@ -345,15 +343,14 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 		return a.finishJanitorJob(context.Background(), jobID, result, "skipped")
 	}
 
-	diskBefore, err := getDiskStats(a.cfg.RegistryDataPath)
-	if err != nil {
-		return fail(fmt.Errorf("read disk stats failed: %w", err))
-	}
-	result.FreePctBefore = roundFloat(diskBefore.FreePercent)
-	result.MustFree = diskBefore.FreePercent < float64(a.cfg.LowWatermarkPct)
-	result.EmergencyMode = diskBefore.FreePercent < float64(a.cfg.EmergencyFreePct)
+	freePctBefore := valueAsFloat(fallback.Storage["free_pct"])
+	result.FreePctBefore = roundFloat(freePctBefore)
+	result.MustFree = freePctBefore < float64(a.cfg.LowWatermarkPct)
+	result.EmergencyMode = freePctBefore < float64(a.cfg.EmergencyFreePct)
 	if result.MustFree {
-		result.RequiredBytes = bytesToTarget(diskBefore.TotalBytes, diskBefore.FreeBytes, a.cfg.TargetFreePct)
+		if required, ok := fallback.Storage["bytes_to_target"].(int64); ok {
+			result.RequiredBytes = required
+		}
 	}
 
 	if fallback.State == "upstream-degraded" && !result.EmergencyMode && !force {
@@ -370,6 +367,7 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 	result.CandidateCount = len(candidates)
 
 	recoveredEstimate := int64(0)
+	gcTargets := map[string]UpstreamTarget{}
 	for _, candidate := range candidates {
 		if len(result.Results) >= a.cfg.MaxDeleteBatch {
 			break
@@ -404,6 +402,8 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 				item.Status = "deleted"
 				result.DeletedCount++
 				recoveredEstimate += candidate.SizeBytes
+				target, _ := a.cfg.ResolveRepoTarget(candidate.Repo)
+				gcTargets[target.Host] = target
 			}
 		} else {
 			item.Status = "error"
@@ -418,13 +418,22 @@ func (a *App) runJanitor(ctx context.Context, trigger string, requestDryRun, for
 
 	result.EstimatedRecoveredBytes = recoveredEstimate
 	if !result.DryRun && result.DeletedCount > 0 {
-		if _, err := a.requestGC(trigger, false); err == nil {
+		requested := 0
+		for _, target := range gcTargets {
+			if _, err := a.requestGCForTarget(target, trigger, false); err == nil {
+				requested++
+			}
+		}
+		if requested > 0 {
 			result.GCRequested = true
+			for host := range gcTargets {
+				result.TargetHosts = append(result.TargetHosts, host)
+			}
 		}
 	}
 
-	if diskCurrent, err := getDiskStats(a.cfg.RegistryDataPath); err == nil {
-		result.FreePctCurrent = roundFloat(diskCurrent.FreePercent)
+	if refreshed, err := a.refreshFallbackStatus(ctx); err == nil {
+		result.FreePctCurrent = roundFloat(valueAsFloat(refreshed.Storage["free_pct"]))
 	} else {
 		result.FreePctCurrent = result.FreePctBefore
 	}
@@ -473,7 +482,8 @@ func (a *App) finishJanitorJob(ctx context.Context, jobID int64, result JanitorR
 }
 
 func (a *App) deleteManifest(ctx context.Context, repo, digest string) (bool, int, string) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("%s/v2/%s/manifests/%s", a.cfg.RegistryURL, repo, digest), nil)
+	target, upstreamRepo := a.cfg.ResolveRepoTarget(repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("%s/v2/%s/manifests/%s", target.BackendURL, upstreamRepo, digest), nil)
 	if err != nil {
 		return false, 0, err.Error()
 	}
@@ -497,21 +507,31 @@ func (a *App) markDeleted(ctx context.Context, repo, digest, reason string) erro
 }
 
 func (a *App) runGC(ctx context.Context, trigger string, force bool) (GCResult, error) {
-	request, err := a.requestGC(trigger, force)
-	if err != nil {
-		return GCResult{}, err
+	var requestedAt string
+	var targetHosts []string
+	for _, target := range a.cfg.Upstreams {
+		request, err := a.requestGCForTarget(target, trigger, force)
+		if err != nil {
+			return GCResult{}, err
+		}
+		if requestedAt == "" {
+			requestedAt = request.RequestedAt
+		}
+		targetHosts = append(targetHosts, target.Host)
 	}
 	result := GCResult{
 		Queued:        true,
-		RequestedAt:   request.RequestedAt,
-		TriggerSource: request.TriggerSource,
-		Forced:        request.Force,
+		TargetHosts:   targetHosts,
+		RequestedAt:   requestedAt,
+		TriggerSource: firstNonEmpty(trigger, "manual"),
+		Forced:        force,
 		GCPending:     true,
 	}
 	a.logSystem(ctx, "info", "gc", "", "gc requested", map[string]any{
 		"trigger":      trigger,
 		"force":        force,
-		"requested_at": request.RequestedAt,
+		"requested_at": requestedAt,
+		"targets":      targetHosts,
 	})
 	return result, nil
 }
@@ -521,10 +541,6 @@ func (a *App) executeGC(ctx context.Context, trigger string, force bool) (GCResu
 		return GCResult{}, err
 	}
 	defer a.endOperation("gc")
-	_ = a.setGCActive(true)
-	defer func() {
-		_ = a.setGCActive(false)
-	}()
 
 	startedAt := nowRFC3339()
 	jobID, err := a.createJobRun(ctx, "gc", trigger, startedAt)
@@ -581,25 +597,42 @@ func (a *App) executeGC(ctx context.Context, trigger string, force bool) (GCResu
 		return a.finishGCJob(context.Background(), jobID, result, "skipped")
 	}
 
-	cmd := exec.CommandContext(ctx, a.cfg.RegistryBinaryPath, "garbage-collect", a.cfg.RegistryConfigPath)
-	output, execErr := cmd.CombinedOutput()
+	var combinedLogs []string
 	result.RegistryImage = "local-registry-binary"
-	result.LogsTail = trimTail(string(output), maxLogTailBytes)
-	result.FinishedAt = nowRFC3339()
-	if execErr != nil {
-		if exitErr, ok := execErr.(*exec.ExitError); ok {
-			result.StatusCode = exitErr.ExitCode()
-		} else {
-			result.StatusCode = 1
+	for _, target := range a.cfg.Upstreams {
+		shouldRun := force || a.gcRequestedForTarget(target)
+		if !shouldRun {
+			continue
 		}
-		return fail(fmt.Errorf("registry garbage-collect failed: %w", execErr))
+		result.TargetHosts = append(result.TargetHosts, target.Host)
+		_ = a.setGCActiveForTarget(target, true)
+		cmd := exec.CommandContext(ctx, target.RegistryBinaryPath, "garbage-collect", target.RegistryConfigPath)
+		output, execErr := cmd.CombinedOutput()
+		_ = a.setGCActiveForTarget(target, false)
+
+		combinedLogs = append(combinedLogs, fmt.Sprintf("[%s]\n%s", target.Host, strings.TrimSpace(string(output))))
+		if execErr != nil {
+			if exitErr, ok := execErr.(*exec.ExitError); ok {
+				result.StatusCode = exitErr.ExitCode()
+			} else {
+				result.StatusCode = 1
+			}
+			result.LogsTail = trimTail(strings.Join(combinedLogs, "\n\n"), maxLogTailBytes)
+			result.FinishedAt = nowRFC3339()
+			return fail(fmt.Errorf("registry garbage-collect failed for %s: %w", target.Host, execErr))
+		}
+		if err := a.clearGCRequestForTarget(target); err == nil {
+			result.GCFlagCleared = true
+		}
 	}
 
 	result.StatusCode = 0
-	if err := a.clearGCRequest(); err == nil {
-		result.GCPending = false
+	result.GCPending = a.gcRequested()
+	result.LogsTail = trimTail(strings.Join(combinedLogs, "\n\n"), maxLogTailBytes)
+	if !result.GCPending {
 		result.GCFlagCleared = true
 	}
+	result.FinishedAt = nowRFC3339()
 
 	details, _ := json.Marshal(result)
 	if err := a.finishJobRun(context.Background(), jobID, "success", result.FinishedAt, details); err != nil {
@@ -649,13 +682,22 @@ func (a *App) gcWorkerLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			request, ok, err := a.readGCRequest()
-			if err != nil {
-				a.logger.Error("gc request read failed", "error", err)
-				continue
+			var pendingRequest GCRequest
+			pending := false
+			for _, target := range a.cfg.Upstreams {
+				request, ok, err := a.readGCRequestForTarget(target)
+				if err != nil {
+					a.logger.Error("gc request read failed", "error", err, "target", target.Host)
+					continue
+				}
+				if ok {
+					pendingRequest = request
+					pending = true
+					break
+				}
 			}
-			if ok {
-				if _, err := a.executeGC(context.Background(), request.TriggerSource, request.Force); err != nil && !errors.Is(err, errOperationBusy) {
+			if pending {
+				if _, err := a.executeGC(context.Background(), pendingRequest.TriggerSource, pendingRequest.Force); err != nil && !errors.Is(err, errOperationBusy) {
 					a.logger.Error("requested gc failed", "error", err)
 				}
 				continue
@@ -705,74 +747,6 @@ func (a *App) housekeepingLoop(ctx context.Context) {
 			}
 		}
 	}
-}
-
-func (a *App) requestGC(trigger string, force bool) (GCRequest, error) {
-	request := GCRequest{
-		TriggerSource: firstNonEmpty(trigger, "manual"),
-		RequestedAt:   nowRFC3339(),
-		Force:         force,
-	}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return GCRequest{}, err
-	}
-	return request, os.WriteFile(a.cfg.GCRequestFlag, payload, 0o600)
-}
-
-func (a *App) readGCRequest() (GCRequest, bool, error) {
-	data, err := os.ReadFile(a.cfg.GCRequestFlag)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return GCRequest{}, false, nil
-		}
-		return GCRequest{}, false, err
-	}
-	if len(data) == 0 {
-		return GCRequest{TriggerSource: "manual", RequestedAt: nowRFC3339()}, true, nil
-	}
-
-	var request GCRequest
-	if err := json.Unmarshal(data, &request); err != nil {
-		request = GCRequest{
-			TriggerSource: "legacy",
-			RequestedAt:   strings.TrimSpace(string(data)),
-		}
-	}
-	if request.TriggerSource == "" {
-		request.TriggerSource = "manual"
-	}
-	if request.RequestedAt == "" {
-		request.RequestedAt = nowRFC3339()
-	}
-	return request, true, nil
-}
-
-func (a *App) gcRequested() bool {
-	_, err := os.Stat(a.cfg.GCRequestFlag)
-	return err == nil
-}
-
-func (a *App) clearGCRequest() error {
-	if err := os.Remove(a.cfg.GCRequestFlag); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func (a *App) setGCActive(active bool) error {
-	if active {
-		return os.WriteFile(a.cfg.GCActiveFlag, []byte(nowRFC3339()), 0o600)
-	}
-	if err := os.Remove(a.cfg.GCActiveFlag); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func (a *App) gcActive() bool {
-	_, err := os.Stat(a.cfg.GCActiveFlag)
-	return err == nil
 }
 
 func (a *App) beginOperation(kind string) error {

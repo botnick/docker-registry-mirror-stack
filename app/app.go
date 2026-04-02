@@ -98,6 +98,9 @@ func NewApp(cfg Config, logger *slog.Logger) (*App, error) {
 	if err := app.initDefaultSettings(context.Background()); err != nil {
 		return nil, err
 	}
+	if err := app.normalizeStoredRepos(context.Background()); err != nil {
+		return nil, err
+	}
 	if err := app.pruneExpiredSessions(context.Background()); err != nil {
 		return nil, err
 	}
@@ -291,6 +294,7 @@ func (a *App) routes() http.Handler {
 	if a.cfg.AppMode == "control" {
 		mux.HandleFunc("/robots.txt", a.handleRobotsTxt)
 		mux.HandleFunc("/notifications", a.handleNotifications)
+		mux.HandleFunc("/notifications/", a.handleNotifications)
 		mux.HandleFunc("/login", a.handleLoginPage)
 		mux.HandleFunc("/auth/login", a.handleLogin)
 	}
@@ -366,6 +370,8 @@ func (a *App) handleProtectedAPI(w http.ResponseWriter, r *http.Request) {
 		a.handleEvents(w, r)
 	case "/api/cache/overview":
 		a.handleCacheOverview(w, r)
+	case "/api/cache/sync":
+		a.handleCacheSync(w, r)
 	case "/api/cleanup/candidates":
 		a.handleCandidates(w, r)
 	case "/api/cleanup/run":

@@ -53,6 +53,14 @@ func (a *App) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "payload ไม่ใช่ JSON ที่รองรับ")
 		return
 	}
+	upstreamHost := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/notifications")), "/")
+	if upstreamHost == "" {
+		upstreamHost = a.cfg.DefaultTarget().Host
+	}
+	if _, ok := a.cfg.FindTargetByHost(upstreamHost); !ok {
+		a.writeError(w, http.StatusBadRequest, "unknown upstream host")
+		return
+	}
 	events := envelope.Events
 	if len(events) == 0 {
 		events = []json.RawMessage{body}
@@ -61,7 +69,7 @@ func (a *App) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	stored := 0
 	failed := 0
 	for _, raw := range events {
-		if err := a.recordEvent(r.Context(), raw); err != nil {
+		if err := a.recordEvent(r.Context(), raw, upstreamHost); err != nil {
 			failed++
 			a.logger.Warn("record event failed", "error", err)
 			continue
@@ -130,6 +138,7 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"login_lock_minutes":              safeDurationMinutes(a.cfg.LoginLockDuration),
 		"notifications_username":          a.cfg.NotificationsUsername,
 		"gc_worker_poll_seconds":          int(a.cfg.GCWorkerPollInterval.Seconds()),
+		"upstreams":                       a.cfg.Upstreams,
 		"maintenance":                     maintenance,
 	})
 }
@@ -158,6 +167,15 @@ func (a *App) handleCacheOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, http.StatusOK, overview)
+}
+
+func (a *App) handleCacheSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	summary := a.runCatalogSync(r.Context(), "manual")
+	a.writeJSON(w, http.StatusOK, summary)
 }
 
 func (a *App) handleCandidates(w http.ResponseWriter, r *http.Request) {

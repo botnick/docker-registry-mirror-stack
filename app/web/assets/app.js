@@ -300,6 +300,7 @@ async function renderCache() {
   const data = await api("/api/cache/overview");
   const largest = (data.largest || []).map((item) => `
     <tr>
+      <td>${esc(item.upstream_host || "-")}</td>
       <td><a href="/artifact?repo=${encodeURIComponent(item.repo)}&digest=${encodeURIComponent(item.digest)}"><strong>${esc(item.repo)}</strong></a></td>
       <td>${esc(item.tag || "-")}</td>
       <td>${fmtBytes(item.size_bytes)}</td>
@@ -309,6 +310,7 @@ async function renderCache() {
     </tr>`).join("");
   const candidates = (data.candidates || []).slice(0, 12).map((item) => `
     <tr>
+      <td>${esc(item.upstream_host || "-")}</td>
       <td><a href="/artifact?repo=${encodeURIComponent(item.repo)}&digest=${encodeURIComponent(item.digest)}">${esc(item.repo)}</a></td>
       <td>${esc(item.tag || "-")}</td>
       <td>${fmtBytes(item.size_bytes)}</td>
@@ -325,9 +327,31 @@ async function renderCache() {
       ])}</article>
       <article class="panel"><div class="panel-head"><div><h2>Fallback snapshot</h2></div><a href="/health">รายละเอียด</a></div>${jsonBlock(data.fallback)}</article>
     </section>
-    ${panel("Artifacts ขนาดใหญ่ที่สุด", "ใช้ดูว่าพื้นที่ส่วนใหญ่ถูกใช้ไปกับอะไร", `<div class="table-wrap"><table><thead><tr><th>Repo</th><th>Tag</th><th>Size</th><th>Use</th><th>Last used</th><th>Status</th></tr></thead><tbody>${largest || '<tr><td colspan="6"><div class="empty-state">ยังไม่มีข้อมูล</div></td></tr>'}</tbody></table></div>`)}
-    ${panel("Cleanup candidates เบื้องต้น", "รายการที่มีสิทธิ์ถูกลบตาม policy ปัจจุบัน", `<div class="table-wrap"><table><thead><tr><th>Repo</th><th>Tag</th><th>Size</th><th>Last used</th><th>Use</th></tr></thead><tbody>${candidates || '<tr><td colspan="5"><div class="empty-state">ยังไม่มี candidate</div></td></tr>'}</tbody></table></div>`)}
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Catalog sync</h2>
+          <p>กด sync ด้วยมือเมื่อเพิ่ง pull image จาก cache และต้องการเห็นรายการใน UI ทันที</p>
+        </div>
+        <button class="ghost-button" id="cache-sync" type="button">Sync catalog now</button>
+      </div>
+    </section>
+    ${panel("Artifacts ขนาดใหญ่ที่สุด", "ใช้ดูว่าพื้นที่ส่วนใหญ่ถูกใช้ไปกับอะไร", `<div class="table-wrap"><table><thead><tr><th>Upstream</th><th>Repo</th><th>Tag</th><th>Size</th><th>Use</th><th>Last used</th><th>Status</th></tr></thead><tbody>${largest || '<tr><td colspan="7"><div class="empty-state">ยังไม่มีข้อมูล</div></td></tr>'}</tbody></table></div>`)}
+    ${panel("Cleanup candidates เบื้องต้น", "รายการที่มีสิทธิ์ถูกลบตาม policy ปัจจุบัน", `<div class="table-wrap"><table><thead><tr><th>Upstream</th><th>Repo</th><th>Tag</th><th>Size</th><th>Last used</th><th>Use</th></tr></thead><tbody>${candidates || '<tr><td colspan="6"><div class="empty-state">ยังไม่มี candidate</div></td></tr>'}</tbody></table></div>`)}
   `;
+  root.querySelector("#cache-sync")?.addEventListener("click", async () => {
+    const result = await postJSON("/api/cache/sync", {});
+    await renderCache();
+    const repositories = Number(result.repositories || 0);
+    const artifactsSeen = Number(result.artifacts_seen || 0);
+    const errorCount = Number(result.error_count || 0);
+    showFlash(
+      errorCount > 0
+        ? `catalog sync เสร็จแล้ว พบ ${artifactsSeen} tags จาก ${repositories} repos และมี ${errorCount} จุดที่ต้องเช็กต่อ`
+        : `catalog sync เสร็จแล้ว พบ ${artifactsSeen} tags จาก ${repositories} repos`,
+      errorCount > 0 ? "warn" : "success",
+    );
+  });
 }
 
 async function renderArtifacts() {
@@ -341,6 +365,7 @@ async function renderArtifacts() {
   const data = await api(`/api/artifacts?limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}&state=${encodeURIComponent(state)}&pinned=${encodeURIComponent(pinned)}&protected=${encodeURIComponent(protectedOnly)}`);
   const rows = (data.items || []).map((item) => `
     <tr>
+      <td>${esc(item.upstream_host || "-")}</td>
       <td class="cell-repo"><a href="/artifact?repo=${encodeURIComponent(item.repo)}&digest=${encodeURIComponent(item.digest)}"><strong>${esc(item.repo)}</strong></a></td>
       <td class="cell-tag">${esc(item.tag || "-")}</td>
       <td class="mono cell-digest">${esc(item.digest)}</td>
@@ -364,7 +389,7 @@ async function renderArtifacts() {
         <label class="field"><span>Explicit protected</span><select name="protected">${["", "true", "false"].map((item) => `<option value="${item}" ${item === protectedOnly ? "selected" : ""}>${item === "" ? "ทั้งหมด" : item}</option>`).join("")}</select></label>
         <div class="field" style="align-self:end"><button class="primary-button" type="submit">ใช้ตัวกรอง</button></div>
       </form>`)}
-    ${panel("รายการ Artifacts", "สั่งดู detail, pin และ protect ได้จากหน้านี้", `<div class="table-wrap"><table><thead><tr><th>Repo</th><th>Tag</th><th>Digest</th><th>Size</th><th>Use</th><th>Last used</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows || '<tr><td colspan="8"><div class="empty-state">ไม่พบข้อมูล</div></td></tr>'}</tbody></table></div>${pager(data)}`)}
+    ${panel("รายการ Artifacts", "สั่งดู detail, pin และ protect ได้จากหน้านี้", `<div class="table-wrap"><table><thead><tr><th>Upstream</th><th>Repo</th><th>Tag</th><th>Digest</th><th>Size</th><th>Use</th><th>Last used</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows || '<tr><td colspan="9"><div class="empty-state">ไม่พบข้อมูล</div></td></tr>'}</tbody></table></div>${pager(data)}`)}
   `;
 
   root.querySelector("#artifact-filter")?.addEventListener("submit", (event) => {
@@ -423,6 +448,7 @@ async function renderArtifact() {
     <section class="two-column">
       <article class="panel">
         ${defs([
+          { label: "Upstream", value: artifact.upstream_host || "-" },
           { label: "Repo", value: artifact.repo },
           { label: "Digest", value: artifact.digest, mono: true },
           { label: "Tag ล่าสุด", value: artifact.tag || "-" },
@@ -469,6 +495,7 @@ async function renderEvents() {
     <tr>
       <td class="mono cell-numeric">${item.id}</td>
       <td class="cell-date">${fmtTime(item.received_at)}</td>
+      <td>${esc(item.upstream_host || "-")}</td>
       <td>${esc(item.action || "-")}</td>
       <td class="cell-repo">${esc(item.repo || "-")}</td>
       <td class="cell-tag">${esc(item.tag || "-")}</td>
@@ -481,7 +508,7 @@ async function renderEvents() {
         <label class="checkbox-row"><input type="checkbox" name="include_raw" ${includeRaw ? "checked" : ""}> แสดง raw JSON</label>
         <button class="primary-button" type="submit">รีเฟรช</button>
       </form>
-      <div class="table-wrap"><table><thead><tr><th>ID</th><th>เวลา</th><th>Action</th><th>Repo</th><th>Tag</th><th>Digest</th><th>Raw</th></tr></thead><tbody>${rows || '<tr><td colspan="7"><div class="empty-state">ยังไม่มี event</div></td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>เวลา</th><th>Upstream</th><th>Action</th><th>Repo</th><th>Tag</th><th>Digest</th><th>Raw</th></tr></thead><tbody>${rows || '<tr><td colspan="8"><div class="empty-state">ยังไม่มี event</div></td></tr>'}</tbody></table></div>
       ${pager(data)}`)}
   `;
   root.querySelector("#events-filter")?.addEventListener("submit", (event) => {
@@ -691,6 +718,17 @@ async function renderGC() {
 
 async function renderHealth() {
   const [fallback, overview] = await Promise.all([api("/api/system/fallback"), api("/api/system/overview")]);
+  const targetCards = (fallback.targets || []).map((target) => `
+    <article class="panel">
+      <div class="panel-head"><div><h3>${esc(target.display_name || target.host || "-")}</h3><p>${esc(target.host || "-")}</p></div></div>
+      ${defs([
+        { label: "Registry", value: target.registry?.healthy ? "พร้อม" : "ผิดปกติ" },
+        { label: "Upstream", value: target.upstream?.healthy ? "พร้อม" : "ผิดปกติ" },
+        { label: "Free %", value: `${target.storage?.free_pct || 0}%` },
+        { label: "GC pending", value: target.gc_pending ? "ใช่" : "ไม่ใช่" },
+        { label: "Storage path", value: target.storage?.path || "-", mono: true },
+      ])}
+    </article>`).join("");
   root.innerHTML = `
     <section class="hero-grid">
       <article class="panel">
@@ -734,6 +772,7 @@ async function renderHealth() {
         { label: "Maintenance note", value: fallback.maintenance?.note || "-" },
       ])}</article>
     </section>
+    ${targetCards ? `<section class="stack-grid">${targetCards}</section>` : ""}
     ${panel("Probe details", "รายละเอียดการตรวจสุขภาพล่าสุด", `<div class="two-column"><div class="panel" style="box-shadow:none"><div class="panel-head"><div><h3>Registry</h3></div></div>${jsonBlock(fallback.registry)}</div><div class="panel" style="box-shadow:none"><div class="panel-head"><div><h3>Upstream</h3></div></div>${jsonBlock(fallback.upstream)}</div></div>`)}
     ${panel("Policy snapshot", "ข้อมูลประกอบการตัดสินใจด้าน cleanup และ fallback", jsonBlock(overview.policy))}
   `;
@@ -810,7 +849,7 @@ async function renderLogs() {
     ${panel("Logs และกิจกรรมระบบ", "รองรับการค้นหา, กรอง และดูแบบ near-live", `
       <form id="logs-filter" class="toolbar">
         <label class="field"><span>Level</span><select name="level">${["all", "info", "warn", "error"].map((item) => `<option value="${item}" ${item === level ? "selected" : ""}>${item}</option>`).join("")}</select></label>
-        <label class="field"><span>Scope</span><select name="scope">${["all", "startup", "auth", "webhook", "artifact", "janitor", "gc", "health", "maintenance"].map((item) => `<option value="${item}" ${item === scope ? "selected" : ""}>${item}</option>`).join("")}</select></label>
+        <label class="field"><span>Scope</span><select name="scope">${["all", "startup", "auth", "webhook", "artifact", "janitor", "gc", "health", "maintenance", "catalog"].map((item) => `<option value="${item}" ${item === scope ? "selected" : ""}>${item}</option>`).join("")}</select></label>
         <label class="field"><span>Actor</span><input name="actor" value="${esc(actor)}" placeholder="username"></label>
         <label class="field"><span>Search</span><input name="search" value="${esc(search)}" placeholder="message หรือ details"></label>
         <label class="checkbox-row"><input type="checkbox" name="live" ${live ? "checked" : ""}> near-live</label>
@@ -853,6 +892,14 @@ async function renderLogs() {
 
 async function renderSettings() {
   const [config, fallback] = await Promise.all([api("/api/system/config"), api("/api/system/fallback")]);
+  const upstreamRows = (config.upstreams || []).map((item) => `
+    <tr>
+      <td>${esc(item.display_name || item.host || "-")}</td>
+      <td>${esc(item.host || "-")}</td>
+      <td>${item.default ? "default" : "-"}</td>
+      <td class="mono">${esc(item.backend_url || "-")}</td>
+      <td class="mono">${esc(item.upstream_health_url || "-")}</td>
+    </tr>`).join("");
   root.innerHTML = `
     <section class="three-column">
       <article class="panel">${defs([
@@ -892,6 +939,7 @@ async function renderSettings() {
       { label: "Health interval", value: `${config.health_check_interval_seconds || 0} วินาที` },
       { label: "Upstream timeout", value: `${config.upstream_timeout_seconds || 0} วินาที` },
     ]))}
+    ${panel("Configured upstreams", "รายการ upstream caches ที่ router และ control plane รู้จัก", `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Host</th><th>Default</th><th>Backend URL</th><th>Health URL</th></tr></thead><tbody>${upstreamRows || '<tr><td colspan="5"><div class="empty-state">ยังไม่มี upstream</div></td></tr>'}</tbody></table></div>`)}
     ${panel("Retention", "อายุการเก็บ metadata ภายในระบบ", defs([
       { label: "Log retention", value: `${config.log_retention_days || 0} วัน` },
       { label: "Event retention", value: `${config.event_retention_days || 0} วัน` },

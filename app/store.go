@@ -13,6 +13,77 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+func (a *App) normalizeStoredRepos(ctx context.Context) error {
+	defaultTarget := a.cfg.DefaultTarget()
+	prefixes := a.cfg.TargetHostList()
+	if defaultTarget.Host == "" || len(prefixes) == 0 {
+		return nil
+	}
+
+	rewriteTable := func(tableName, columnName string) error {
+		rows, err := a.db.QueryContext(ctx, fmt.Sprintf("SELECT rowid, %s FROM %s", columnName, tableName))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		type rewriteItem struct {
+			RowID int64
+			Repo  string
+		}
+		var updates []rewriteItem
+		for rows.Next() {
+			var rowID int64
+			var repo sql.NullString
+			if err := rows.Scan(&rowID, &repo); err != nil {
+				return err
+			}
+			if !repo.Valid {
+				continue
+			}
+			current := strings.TrimSpace(repo.String)
+			if current == "" {
+				continue
+			}
+			alreadyCanonical := false
+			lowerCurrent := strings.ToLower(current)
+			for _, host := range prefixes {
+				if strings.HasPrefix(lowerCurrent, host+"/") {
+					alreadyCanonical = true
+					break
+				}
+			}
+			if alreadyCanonical {
+				continue
+			}
+			updates = append(updates, rewriteItem{
+				RowID: rowID,
+				Repo:  a.cfg.CanonicalRepo(defaultTarget.Host, current),
+			})
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, update := range updates {
+			if _, err := a.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET %s = ? WHERE rowid = ?", tableName, columnName), update.Repo, update.RowID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for _, pair := range [][2]string{
+		{"artifacts", "repo"},
+		{"artifact_tags", "repo"},
+		{"events", "repo"},
+	} {
+		if err := rewriteTable(pair[0], pair[1]); err != nil {
+			return fmt.Errorf("normalize %s.%s: %w", pair[0], pair[1], err)
+		}
+	}
+	return nil
+}
+
 func (a *App) setSettingIfMissing(ctx context.Context, key, value string) error {
 	_, err := a.db.ExecContext(ctx, `
 		INSERT INTO settings (key, value, updated_at)
@@ -334,13 +405,13 @@ func (a *App) pruneExpiredSessions(ctx context.Context) error {
 	return err
 }
 
-func (a *App) recordEvent(ctx context.Context, raw json.RawMessage) error {
+func (a *App) recordEvent(ctx context.Context, raw json.RawMessage, upstreamHost string) error {
 	var event NotificationEvent
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return fmt.Errorf("decode event: %w", err)
 	}
 
-	repo := firstNonEmpty(event.Target.Repository, event.Repository)
+	repo := a.cfg.CanonicalRepo(upstreamHost, firstNonEmpty(event.Target.Repository, event.Repository))
 	tag := strings.TrimSpace(event.Target.Tag)
 	digest := strings.TrimSpace(event.Target.Digest)
 	action := strings.TrimSpace(event.Action)
@@ -390,13 +461,14 @@ func (a *App) recordEvent(ctx context.Context, raw json.RawMessage) error {
 	}
 
 	a.logSystem(ctx, "info", "webhook", "", "notification stored", map[string]any{
-		"repo":      repo,
-		"tag":       tag,
-		"digest":    digest,
-		"action":    action,
-		"event_id":  event.ID,
-		"actor":     event.Actor.Name,
-		"source_ip": event.Request.Addr,
+		"upstream_host": upstreamHost,
+		"repo":          repo,
+		"tag":           tag,
+		"digest":        digest,
+		"action":        action,
+		"event_id":      event.ID,
+		"actor":         event.Actor.Name,
+		"source_ip":     event.Request.Addr,
 	})
 	return nil
 }
@@ -621,7 +693,7 @@ func (a *App) queryArtifactEvents(ctx context.Context, repo, digest string, limi
 
 	var items []EventRecord
 	for rows.Next() {
-		record, err := scanEvent(rows, true)
+		record, err := a.scanEvent(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -632,15 +704,17 @@ func (a *App) queryArtifactEvents(ctx context.Context, repo, digest string, limi
 
 func (a *App) queryArtifactLogs(ctx context.Context, repo, digest string, limit int) ([]LogRecord, error) {
 	pattern := "%" + repo + "%"
+	_, upstreamRepo := a.cfg.ResolveRepoTarget(repo)
+	legacyPattern := "%" + upstreamRepo + "%"
 	digestPattern := "%" + digest + "%"
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT id, created_at, level, scope, actor, message, details_json
 		FROM system_logs
-		WHERE details_json LIKE ?
+		WHERE (details_json LIKE ? OR details_json LIKE ?)
 		  AND details_json LIKE ?
 		ORDER BY created_at DESC, id DESC
 		LIMIT ?
-	`, pattern, digestPattern, limit)
+	`, pattern, legacyPattern, digestPattern, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -694,7 +768,9 @@ func (a *App) listCandidates(ctx context.Context, emergencyMode bool) ([]Artifac
 }
 
 func (a *App) decorateArtifact(item Artifact, emergencyMode bool) Artifact {
-	item.RegexProtected = a.isProtected(item.Repo, valueOrEmpty(item.Tag))
+	target, upstreamRepo := a.cfg.ResolveRepoTarget(item.Repo)
+	item.UpstreamHost = target.Host
+	item.RegexProtected = a.isProtected(upstreamRepo, valueOrEmpty(item.Tag))
 	item.Protected = item.RegexProtected || item.ExplicitProtected
 
 	var reasons []string
@@ -769,7 +845,7 @@ func (a *App) queryEvents(ctx context.Context, limit, offset int, includeRaw boo
 
 	var items []EventRecord
 	for rows.Next() {
-		record, err := scanEvent(rows, includeRaw)
+		record, err := a.scanEvent(rows, includeRaw)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -783,7 +859,7 @@ func (a *App) queryEvents(ctx context.Context, limit, offset int, includeRaw boo
 	return items, total, rows.Err()
 }
 
-func scanEvent(scanner rowScanner, includeRaw bool) (EventRecord, error) {
+func (a *App) scanEvent(scanner rowScanner, includeRaw bool) (EventRecord, error) {
 	var item EventRecord
 	var action sql.NullString
 	var repo sql.NullString
@@ -797,6 +873,10 @@ func scanEvent(scanner rowScanner, includeRaw bool) (EventRecord, error) {
 	item.Repo = toPointer(repo)
 	item.Tag = toPointer(tag)
 	item.Digest = toPointer(digest)
+	if item.Repo != nil {
+		target, _ := a.cfg.ResolveRepoTarget(*item.Repo)
+		item.UpstreamHost = target.Host
+	}
 	if includeRaw {
 		item.Raw = json.RawMessage(raw)
 	}

@@ -609,7 +609,10 @@ Useful commands:
   sudo ${COMPOSE_COMMAND_LABEL} ps
   sudo ${COMPOSE_COMMAND_LABEL} logs -f control
   sudo ${COMPOSE_COMMAND_LABEL} logs -f gc-worker
-  sudo ${COMPOSE_COMMAND_LABEL} logs -f registry
+  sudo ${COMPOSE_COMMAND_LABEL} logs -f router
+  sudo ${COMPOSE_COMMAND_LABEL} logs -f registry-dockerhub
+  sudo ${COMPOSE_COMMAND_LABEL} logs -f registry-ghcr
+  sudo ${COMPOSE_COMMAND_LABEL} logs -f registry-quay
   sudo ${COMPOSE_COMMAND_LABEL} up -d --build
   sudo ${COMPOSE_COMMAND_LABEL} restart
 EOF
@@ -665,7 +668,9 @@ Control plane hardening defaults:
   - garbage collection runs in the dedicated gc-worker service without docker.sock access
 
 Expose the Web UI only through an HTTPS reverse proxy.
-The registry mirror can still be used directly over http://IP:PORT inside your internal network.
+The router on http://IP:PORT serves Docker Hub by mirror semantics and also accepts host-prefixed pulls for:
+  - GHCR: http://YOUR_SERVER_IP:${registry_port}/ghcr.io/pterodactyl/yolks:java_21
+  - Quay: http://YOUR_SERVER_IP:${registry_port}/quay.io/pterodactyl/yolks:java_11
 
 If you intentionally want the control UI on direct HTTP too, set these in .env and rebuild:
   PUBLIC_BASE_URL=http://YOUR_SERVER_IP:${control_port}

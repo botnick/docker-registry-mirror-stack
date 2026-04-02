@@ -17,6 +17,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.AppMode == "router" {
+		handler, err := NewRegistryRouter(cfg, logger)
+		if err != nil {
+			logger.Error("router startup failed", "error", err)
+			os.Exit(1)
+		}
+		server := &http.Server{
+			Addr:              cfg.ListenAddress(),
+			Handler:           handler,
+			ReadHeaderTimeout: 15 * second,
+		}
+		logger.Info("registry router started", "addr", server.Addr, "targets", cfg.TargetHostList())
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("router stopped with error", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	app, err := NewApp(cfg, logger)
 	if err != nil {
 		logger.Error("startup failed", "error", err)
@@ -27,7 +46,9 @@ func main() {
 	defer cancel()
 
 	if cfg.AppMode == "gc-worker" {
-		_ = app.setGCActive(false)
+		for _, target := range cfg.Upstreams {
+			_ = app.setGCActiveForTarget(target, false)
+		}
 		go app.gcWorkerLoop(ctx)
 		app.logger.Info("registry gc worker started", "poll_interval", cfg.GCWorkerPollInterval.String())
 		<-ctx.Done()
@@ -37,6 +58,7 @@ func main() {
 	go app.healthLoop(ctx)
 	go app.housekeepingLoop(ctx)
 	go app.janitorLoop(ctx)
+	go app.catalogSyncLoop(ctx)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddress(),

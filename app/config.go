@@ -17,6 +17,7 @@ const (
 
 type Config struct {
 	AppMode                      string
+	Upstreams                    []UpstreamTarget
 	RegistryURL                  string
 	RegistryDataPath             string
 	RegistryConfigPath           string
@@ -63,7 +64,7 @@ type Config struct {
 func LoadConfig() (Config, error) {
 	cfg := Config{
 		AppMode:                      getEnv("APP_MODE", "control"),
-		RegistryURL:                  strings.TrimRight(getEnv("REGISTRY_URL", "http://registry:5000"), "/"),
+		RegistryURL:                  strings.TrimRight(getEnv("REGISTRY_URL", "http://registry-dockerhub:5000"), "/"),
 		RegistryDataPath:             getEnv("REGISTRY_DATA_PATH", "/var/lib/registry"),
 		RegistryConfigPath:           getEnv("REGISTRY_CONFIG_PATH", "/etc/distribution/config.yml"),
 		RegistryBinaryPath:           getEnv("REGISTRY_BINARY_PATH", "/usr/local/bin/registry"),
@@ -87,7 +88,35 @@ func LoadConfig() (Config, error) {
 		NotificationsPassword:        strings.TrimSpace(os.Getenv("NOTIFICATIONS_PASSWORD")),
 	}
 
-	var err error
+	targets, err := parseUpstreamTargets(os.Getenv("UPSTREAMS_JSON"))
+	if err != nil {
+		return Config{}, err
+	}
+	if len(targets) == 0 {
+		targets = []UpstreamTarget{{
+			Host:               strings.ToLower(getEnv("DEFAULT_UPSTREAM_HOST", "docker.io")),
+			DisplayName:        getEnv("DEFAULT_UPSTREAM_NAME", "Docker Hub"),
+			BackendURL:         cfg.RegistryURL,
+			UpstreamHealthURL:  cfg.UpstreamURL,
+			RegistryDataPath:   cfg.RegistryDataPath,
+			RegistryConfigPath: cfg.RegistryConfigPath,
+			RegistryBinaryPath: cfg.RegistryBinaryPath,
+			GCRequestFlag:      cfg.GCRequestFlag,
+			GCActiveFlag:       cfg.GCActiveFlag,
+			Default:            true,
+		}}
+	}
+	cfg.Upstreams = targets
+
+	defaultTarget := cfg.DefaultTarget()
+	cfg.RegistryURL = defaultTarget.BackendURL
+	cfg.RegistryDataPath = defaultTarget.RegistryDataPath
+	cfg.RegistryConfigPath = defaultTarget.RegistryConfigPath
+	cfg.RegistryBinaryPath = defaultTarget.RegistryBinaryPath
+	cfg.GCRequestFlag = defaultTarget.GCRequestFlag
+	cfg.GCActiveFlag = defaultTarget.GCActiveFlag
+	cfg.UpstreamURL = defaultTarget.UpstreamHealthURL
+
 	if cfg.ListenPort, err = getEnvInt("LISTEN_PORT", 8080); err != nil {
 		return Config{}, err
 	}
@@ -169,15 +198,15 @@ func LoadConfig() (Config, error) {
 	cfg.GCWorkerPollInterval = time.Duration(gcWorkerPollSeconds) * second
 
 	switch {
-	case cfg.SessionSecret == "":
-		return Config{}, fmt.Errorf("SESSION_SECRET is required")
-	case cfg.AppMode != "control" && cfg.AppMode != "gc-worker":
-		return Config{}, fmt.Errorf("APP_MODE must be control or gc-worker")
+	case cfg.AppMode != "control" && cfg.AppMode != "gc-worker" && cfg.AppMode != "router":
+		return Config{}, fmt.Errorf("APP_MODE must be control, gc-worker, or router")
 	case cfg.ListenPort <= 0 || cfg.ListenPort > 65535:
 		return Config{}, fmt.Errorf("LISTEN_PORT must be between 1 and 65535")
-	case !cfg.AllowInsecureControl && !cfg.CookieSecure:
+	case cfg.AppMode == "control" && cfg.SessionSecret == "":
+		return Config{}, fmt.Errorf("SESSION_SECRET is required")
+	case cfg.AppMode == "control" && !cfg.AllowInsecureControl && !cfg.CookieSecure:
 		return Config{}, fmt.Errorf("COOKIE_SECURE=false requires ALLOW_INSECURE_CONTROL=true")
-	case cfg.PublicBaseURL != "" && !cfg.AllowInsecureControl && !strings.HasPrefix(strings.ToLower(cfg.PublicBaseURL), "https://"):
+	case cfg.AppMode == "control" && cfg.PublicBaseURL != "" && !cfg.AllowInsecureControl && !strings.HasPrefix(strings.ToLower(cfg.PublicBaseURL), "https://"):
 		return Config{}, fmt.Errorf("PUBLIC_BASE_URL must use https unless ALLOW_INSECURE_CONTROL=true")
 	case cfg.LowWatermarkPct < 0 || cfg.LowWatermarkPct > 100:
 		return Config{}, fmt.Errorf("LOW_WATERMARK_PCT must be between 0 and 100")
@@ -191,6 +220,8 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("GC_HOUR_UTC must be between 0 and 23")
 	case cfg.UpstreamURL == "":
 		return Config{}, fmt.Errorf("UPSTREAM_HEALTH_URL must not be empty")
+	case len(cfg.Upstreams) == 0:
+		return Config{}, fmt.Errorf("at least one upstream target is required")
 	case cfg.MaxDeleteBatch <= 0:
 		return Config{}, fmt.Errorf("MAX_DELETE_BATCH must be greater than 0")
 	case cfg.UnusedDays <= 0:
@@ -215,10 +246,27 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("JOB_RETENTION_DAYS must be greater than 0")
 	case cfg.NotificationsUsername == "":
 		return Config{}, fmt.Errorf("NOTIFICATIONS_USERNAME must not be empty")
-	case cfg.NotificationsPassword == "":
+	case cfg.AppMode == "control" && cfg.NotificationsPassword == "":
 		return Config{}, fmt.Errorf("NOTIFICATIONS_PASSWORD is required")
 	case cfg.GCWorkerPollInterval <= 0:
 		return Config{}, fmt.Errorf("GC_WORKER_POLL_SECONDS must be greater than 0")
+	}
+
+	if cfg.AppMode != "router" {
+		for _, target := range cfg.Upstreams {
+			switch {
+			case target.RegistryDataPath == "":
+				return Config{}, fmt.Errorf("upstream %s registry_data_path is required", target.Host)
+			case target.RegistryConfigPath == "":
+				return Config{}, fmt.Errorf("upstream %s registry_config_path is required", target.Host)
+			case target.RegistryBinaryPath == "":
+				return Config{}, fmt.Errorf("upstream %s registry_binary_path is required", target.Host)
+			case target.GCRequestFlag == "":
+				return Config{}, fmt.Errorf("upstream %s gc_request_flag is required", target.Host)
+			case target.GCActiveFlag == "":
+				return Config{}, fmt.Errorf("upstream %s gc_active_flag is required", target.Host)
+			}
+		}
 	}
 
 	return cfg, nil
@@ -229,14 +277,19 @@ func (c Config) ListenAddress() string {
 }
 
 func (c Config) EnsurePaths() error {
+	if c.AppMode == "router" {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(c.SQLitePath), 0o755); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(c.GCRequestFlag), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(c.GCActiveFlag), 0o755); err != nil {
-		return err
+	for _, target := range c.Upstreams {
+		if err := os.MkdirAll(filepath.Dir(target.GCRequestFlag), 0o755); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target.GCActiveFlag), 0o755); err != nil {
+			return err
+		}
 	}
 	return nil
 }

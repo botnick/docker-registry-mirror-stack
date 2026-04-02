@@ -48,6 +48,7 @@ type AuthSession struct {
 }
 
 type Artifact struct {
+	UpstreamHost      string   `json:"upstream_host"`
 	Repo              string   `json:"repo"`
 	Tag               *string  `json:"tag"`
 	Digest            string   `json:"digest"`
@@ -74,13 +75,14 @@ type ArtifactDetail struct {
 }
 
 type EventRecord struct {
-	ID         int64           `json:"id"`
-	ReceivedAt string          `json:"received_at"`
-	Action     string          `json:"action"`
-	Repo       *string         `json:"repo"`
-	Tag        *string         `json:"tag"`
-	Digest     *string         `json:"digest"`
-	Raw        json.RawMessage `json:"raw_json,omitempty"`
+	ID           int64           `json:"id"`
+	ReceivedAt   string          `json:"received_at"`
+	UpstreamHost string          `json:"upstream_host"`
+	Action       string          `json:"action"`
+	Repo         *string         `json:"repo"`
+	Tag          *string         `json:"tag"`
+	Digest       *string         `json:"digest"`
+	Raw          json.RawMessage `json:"raw_json,omitempty"`
 }
 
 type JobRun struct {
@@ -143,17 +145,18 @@ type HealthProbe struct {
 }
 
 type FallbackStatus struct {
-	State             string         `json:"state"`
-	Summary           string         `json:"summary"`
-	Details           string         `json:"details"`
-	Since             string         `json:"since"`
-	LastCheckAt       string         `json:"last_check_at"`
-	CachedModeUsable  bool           `json:"cached_mode_usable"`
-	DestructivePaused bool           `json:"destructive_paused"`
-	Registry          HealthProbe    `json:"registry"`
-	Upstream          HealthProbe    `json:"upstream"`
-	Storage           map[string]any `json:"storage"`
-	Maintenance       map[string]any `json:"maintenance"`
+	State             string           `json:"state"`
+	Summary           string           `json:"summary"`
+	Details           string           `json:"details"`
+	Since             string           `json:"since"`
+	LastCheckAt       string           `json:"last_check_at"`
+	CachedModeUsable  bool             `json:"cached_mode_usable"`
+	DestructivePaused bool             `json:"destructive_paused"`
+	Registry          HealthProbe      `json:"registry"`
+	Upstream          HealthProbe      `json:"upstream"`
+	Storage           map[string]any   `json:"storage"`
+	Maintenance       map[string]any   `json:"maintenance"`
+	Targets           []UpstreamStatus `json:"targets,omitempty"`
 }
 
 type MaintenanceState struct {
@@ -176,6 +179,7 @@ type JanitorItemResult struct {
 
 type JanitorResult struct {
 	TriggerSource           string              `json:"trigger_source"`
+	TargetHosts             []string            `json:"target_hosts,omitempty"`
 	StartedAt               string              `json:"started_at"`
 	FinishedAt              string              `json:"finished_at"`
 	DryRun                  bool                `json:"dry_run"`
@@ -202,20 +206,21 @@ type JanitorResult struct {
 }
 
 type GCResult struct {
-	Queued        bool   `json:"queued,omitempty"`
-	RequestedAt   string `json:"requested_at,omitempty"`
-	TriggerSource string `json:"trigger_source"`
-	StartedAt     string `json:"started_at"`
-	FinishedAt    string `json:"finished_at"`
-	Forced        bool   `json:"forced"`
-	Skipped       bool   `json:"skipped"`
-	SkipReason    string `json:"skip_reason,omitempty"`
-	RegistryImage string `json:"registry_image"`
-	StatusCode    int    `json:"status_code"`
-	LogsTail      string `json:"logs_tail"`
-	GCPending     bool   `json:"gc_pending"`
-	GCFlagCleared bool   `json:"gc_flag_cleared"`
-	FallbackState string `json:"fallback_state"`
+	Queued        bool     `json:"queued,omitempty"`
+	TargetHosts   []string `json:"target_hosts,omitempty"`
+	RequestedAt   string   `json:"requested_at,omitempty"`
+	TriggerSource string   `json:"trigger_source"`
+	StartedAt     string   `json:"started_at"`
+	FinishedAt    string   `json:"finished_at"`
+	Forced        bool     `json:"forced"`
+	Skipped       bool     `json:"skipped"`
+	SkipReason    string   `json:"skip_reason,omitempty"`
+	RegistryImage string   `json:"registry_image"`
+	StatusCode    int      `json:"status_code"`
+	LogsTail      string   `json:"logs_tail"`
+	GCPending     bool     `json:"gc_pending"`
+	GCFlagCleared bool     `json:"gc_flag_cleared"`
+	FallbackState string   `json:"fallback_state"`
 }
 
 type PaginatedResponse[T any] struct {

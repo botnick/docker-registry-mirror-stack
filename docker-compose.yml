@@ -1,21 +1,94 @@
+x-upstreams-json: &upstreams_json >-
+  [
+    {"host":"docker.io","display_name":"Docker Hub","backend_url":"http://registry-dockerhub:5000","upstream_health_url":"https://registry-1.docker.io/v2/","registry_data_path":"/var/lib/registry/docker.io","registry_config_path":"/etc/distribution/dockerhub.yml","registry_binary_path":"/usr/local/bin/registry","gc_request_flag":"/data/state/gc.dockerhub.requested","gc_active_flag":"/data/state/gc.dockerhub.running","default":true},
+    {"host":"ghcr.io","display_name":"GitHub Container Registry","backend_url":"http://registry-ghcr:5000","upstream_health_url":"https://ghcr.io/v2/","registry_data_path":"/var/lib/registry/ghcr.io","registry_config_path":"/etc/distribution/ghcr.yml","registry_binary_path":"/usr/local/bin/registry","gc_request_flag":"/data/state/gc.ghcr.requested","gc_active_flag":"/data/state/gc.ghcr.running","default":false},
+    {"host":"quay.io","display_name":"Quay","backend_url":"http://registry-quay:5000","upstream_health_url":"https://quay.io/v2/","registry_data_path":"/var/lib/registry/quay.io","registry_config_path":"/etc/distribution/quay.yml","registry_binary_path":"/usr/local/bin/registry","gc_request_flag":"/data/state/gc.quay.requested","gc_active_flag":"/data/state/gc.quay.running","default":false}
+  ]
+
 services:
-  registry:
-    image: registry:2.8.3
-    container_name: registry-mirror
+  router:
+    build:
+      context: ./app
+    container_name: registry-router
     restart: unless-stopped
+    depends_on:
+      - registry-dockerhub
+      - registry-ghcr
+      - registry-quay
     ports:
       - "${REGISTRY_PORT:-5000}:5000"
     environment:
+      APP_MODE: router
+      LISTEN_HOST: 0.0.0.0
+      LISTEN_PORT: "5000"
+      UPSTREAMS_JSON: *upstreams_json
+      TZ: UTC
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  registry-dockerhub:
+    image: registry:2.8.3
+    container_name: registry-cache-dockerhub
+    restart: unless-stopped
+    environment:
       REGISTRY_HTTP_ADDR: 0.0.0.0:5000
       REGISTRY_NOTIFICATIONS_ENDPOINTS_0_NAME: control-webhook
-      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_URL: http://${NOTIFICATIONS_USERNAME:-registry-notify}:${NOTIFICATIONS_PASSWORD}@control:8080/notifications
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_URL: http://${NOTIFICATIONS_USERNAME:-registry-notify}:${NOTIFICATIONS_PASSWORD}@control:8080/notifications/docker.io
       REGISTRY_NOTIFICATIONS_ENDPOINTS_0_TIMEOUT: 1s
       REGISTRY_NOTIFICATIONS_ENDPOINTS_0_THRESHOLD: 5
       REGISTRY_NOTIFICATIONS_ENDPOINTS_0_BACKOFF: 1s
       TZ: UTC
     volumes:
-      - registry_data:/var/lib/registry
-      - ./registry/config.yml:/etc/distribution/config.yml:ro
+      - registry_data_dockerhub:/var/lib/registry
+      - ./registry/dockerhub.yml:/etc/distribution/config.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  registry-ghcr:
+    image: registry:2.8.3
+    container_name: registry-cache-ghcr
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_NAME: control-webhook
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_URL: http://${NOTIFICATIONS_USERNAME:-registry-notify}:${NOTIFICATIONS_PASSWORD}@control:8080/notifications/ghcr.io
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_TIMEOUT: 1s
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_THRESHOLD: 5
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_BACKOFF: 1s
+      TZ: UTC
+    volumes:
+      - registry_data_ghcr:/var/lib/registry
+      - ./registry/ghcr.yml:/etc/distribution/config.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  registry-quay:
+    image: registry:2.8.3
+    container_name: registry-cache-quay
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_NAME: control-webhook
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_URL: http://${NOTIFICATIONS_USERNAME:-registry-notify}:${NOTIFICATIONS_PASSWORD}@control:8080/notifications/quay.io
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_TIMEOUT: 1s
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_THRESHOLD: 5
+      REGISTRY_NOTIFICATIONS_ENDPOINTS_0_BACKOFF: 1s
+      TZ: UTC
+    volumes:
+      - registry_data_quay:/var/lib/registry
+      - ./registry/quay.yml:/etc/distribution/config.yml:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
       interval: 30s
@@ -29,20 +102,16 @@ services:
     container_name: registry-control
     restart: unless-stopped
     depends_on:
-      - registry
+      - registry-dockerhub
+      - registry-ghcr
+      - registry-quay
     ports:
       - "${CONTROL_BIND_ADDRESS:-127.0.0.1}:${CONTROL_PORT:-8080}:8080"
     environment:
       APP_MODE: control
-      REGISTRY_URL: http://registry:5000
-      REGISTRY_DATA_PATH: /var/lib/registry
-      REGISTRY_CONFIG_PATH: /etc/distribution/config.yml
-      REGISTRY_BINARY_PATH: /usr/local/bin/registry
-      SQLITE_PATH: /data/metadata/registry_meta.db
-      GC_REQUEST_FLAG: /data/state/gc.requested
-      GC_ACTIVE_FLAG: /data/state/gc.running
       LISTEN_HOST: 0.0.0.0
       LISTEN_PORT: "8080"
+      UPSTREAMS_JSON: *upstreams_json
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ALLOW_INSECURE_CONTROL: ${ALLOW_INSECURE_CONTROL:-false}
@@ -53,6 +122,7 @@ services:
       CONTROL_BOOTSTRAP_USERNAME: ${CONTROL_BOOTSTRAP_USERNAME:-admin}
       CONTROL_BOOTSTRAP_PASSWORD: ${CONTROL_BOOTSTRAP_PASSWORD:-}
       CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE: ${CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE:-false}
+      SQLITE_PATH: /data/metadata/registry_meta.db
       DRY_RUN: ${DRY_RUN:-false}
       JANITOR_INTERVAL_SECONDS: ${JANITOR_INTERVAL_SECONDS:-3600}
       MAX_DELETE_BATCH: ${MAX_DELETE_BATCH:-20}
@@ -64,7 +134,6 @@ services:
       GC_HOUR_UTC: ${GC_HOUR_UTC:-19}
       PROTECTED_REPOS_REGEX: ${PROTECTED_REPOS_REGEX:-^(library/)?(alpine|ubuntu|busybox|debian)$}
       PROTECTED_TAGS_REGEX: ${PROTECTED_TAGS_REGEX:-^(latest|stable|lts)$}
-      UPSTREAM_HEALTH_URL: ${UPSTREAM_HEALTH_URL:-https://registry-1.docker.io/v2/}
       HEALTH_CHECK_INTERVAL_SECONDS: ${HEALTH_CHECK_INTERVAL_SECONDS:-60}
       UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-6}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
@@ -77,8 +146,12 @@ services:
       GC_WORKER_POLL_SECONDS: ${GC_WORKER_POLL_SECONDS:-15}
       TZ: UTC
     volumes:
-      - registry_data:/var/lib/registry
-      - ./registry/config.yml:/etc/distribution/config.yml:ro
+      - registry_data_dockerhub:/var/lib/registry/docker.io
+      - registry_data_ghcr:/var/lib/registry/ghcr.io
+      - registry_data_quay:/var/lib/registry/quay.io
+      - ./registry/dockerhub.yml:/etc/distribution/dockerhub.yml:ro
+      - ./registry/ghcr.yml:/etc/distribution/ghcr.yml:ro
+      - ./registry/quay.yml:/etc/distribution/quay.yml:ro
       - ./metadata:/data/metadata
       - ./state:/data/state
     healthcheck:
@@ -94,18 +167,14 @@ services:
     container_name: registry-gc-worker
     restart: unless-stopped
     depends_on:
-      - registry
+      - registry-dockerhub
+      - registry-ghcr
+      - registry-quay
     environment:
       APP_MODE: gc-worker
-      REGISTRY_URL: http://registry:5000
-      REGISTRY_DATA_PATH: /var/lib/registry
-      REGISTRY_CONFIG_PATH: /etc/distribution/config.yml
-      REGISTRY_BINARY_PATH: /usr/local/bin/registry
-      SQLITE_PATH: /data/metadata/registry_meta.db
-      GC_REQUEST_FLAG: /data/state/gc.requested
-      GC_ACTIVE_FLAG: /data/state/gc.running
       LISTEN_HOST: 127.0.0.1
       LISTEN_PORT: "8080"
+      UPSTREAMS_JSON: *upstreams_json
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ALLOW_INSECURE_CONTROL: ${ALLOW_INSECURE_CONTROL:-false}
@@ -116,6 +185,7 @@ services:
       CONTROL_BOOTSTRAP_USERNAME: ${CONTROL_BOOTSTRAP_USERNAME:-admin}
       CONTROL_BOOTSTRAP_PASSWORD: ${CONTROL_BOOTSTRAP_PASSWORD:-}
       CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE: ${CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE:-false}
+      SQLITE_PATH: /data/metadata/registry_meta.db
       DRY_RUN: ${DRY_RUN:-false}
       JANITOR_INTERVAL_SECONDS: ${JANITOR_INTERVAL_SECONDS:-3600}
       MAX_DELETE_BATCH: ${MAX_DELETE_BATCH:-20}
@@ -127,7 +197,6 @@ services:
       GC_HOUR_UTC: ${GC_HOUR_UTC:-19}
       PROTECTED_REPOS_REGEX: ${PROTECTED_REPOS_REGEX:-^(library/)?(alpine|ubuntu|busybox|debian)$}
       PROTECTED_TAGS_REGEX: ${PROTECTED_TAGS_REGEX:-^(latest|stable|lts)$}
-      UPSTREAM_HEALTH_URL: ${UPSTREAM_HEALTH_URL:-https://registry-1.docker.io/v2/}
       HEALTH_CHECK_INTERVAL_SECONDS: ${HEALTH_CHECK_INTERVAL_SECONDS:-60}
       UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-6}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
@@ -140,11 +209,19 @@ services:
       GC_WORKER_POLL_SECONDS: ${GC_WORKER_POLL_SECONDS:-15}
       TZ: UTC
     volumes:
-      - registry_data:/var/lib/registry
-      - ./registry/config.yml:/etc/distribution/config.yml:ro
+      - registry_data_dockerhub:/var/lib/registry/docker.io
+      - registry_data_ghcr:/var/lib/registry/ghcr.io
+      - registry_data_quay:/var/lib/registry/quay.io
+      - ./registry/dockerhub.yml:/etc/distribution/dockerhub.yml:ro
+      - ./registry/ghcr.yml:/etc/distribution/ghcr.yml:ro
+      - ./registry/quay.yml:/etc/distribution/quay.yml:ro
       - ./metadata:/data/metadata
       - ./state:/data/state
 
 volumes:
-  registry_data:
-    name: registry_data
+  registry_data_dockerhub:
+    name: registry_data_dockerhub
+  registry_data_ghcr:
+    name: registry_data_ghcr
+  registry_data_quay:
+    name: registry_data_quay
