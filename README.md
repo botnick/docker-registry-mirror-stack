@@ -6,43 +6,44 @@ Registry Mirror Stack is a self-hosted Docker registry mirror for teams that wan
 
 ## System Preview
 
-ภาพด้านล่างคือ control plane ของระบบจริงที่ใช้ดู mirror health, artifacts, cleanup, GC, logs, maintenance, และ runtime settings ทั้งบน desktop และ mobile โดยข้อมูลสำคัญยังแสดงครบและไม่ซ่อน digest หรือสถานะหลักทิ้ง
+<details>
+  <summary><strong>Open Main Screenshots</strong></summary>
 
-<table>
-  <tr>
-    <td width="50%">
-      <img src="docs/screenshots/login.png" alt="Control plane login screen" width="100%">
-      <p><strong>Login</strong><br>หน้าเข้าสู่ระบบสำหรับ operator พร้อมมุมมองรวมของ cache health, cleanup และ GC</p>
-    </td>
-    <td width="50%">
-      <img src="docs/screenshots/dashboard-overview.png" alt="System dashboard" width="100%">
-      <p><strong>Dashboard</strong><br>ภาพรวมระบบสำหรับเช็ก health, storage pressure, fallback state และงานที่ต้องตัดสินใจทันที</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="docs/screenshots/artifact-catalog.png" alt="Artifact catalog" width="100%">
-      <p><strong>Artifact Catalog</strong><br>ค้นหา repo, ดู digest แบบเต็ม, pin/protect, และเช็กสถานะของ cached images จากจอเดียว</p>
-    </td>
-    <td width="50%">
-      <img src="docs/screenshots/cleanup-and-gc.png" alt="Cleanup workflow" width="100%">
-      <p><strong>Cleanup Workflow</strong><br>ดู candidate, threshold ปัจจุบัน, และประวัติ cleanup เพื่อ reclaim storage อย่างปลอดภัย</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="docs/screenshots/runtime-settings.png" alt="Runtime settings page" width="100%">
-      <p><strong>Runtime Settings</strong><br>สรุป config runtime, cleanup policy, fallback behavior, retention, และ path สำคัญทั้งหมด</p>
-    </td>
-    <td width="50%">
-      <img src="docs/screenshots/mobile-artifact-cards.png" alt="Responsive mobile artifact cards" width="100%">
-      <p><strong>Responsive Mobile View</strong><br>หน้าจอ mobile จะจัดตารางหลักเป็น card layout เพื่อให้ข้อมูลครบ อ่านง่าย และไม่ล้น viewport</p>
-    </td>
-  </tr>
-</table>
+  <p>ภาพชุดหลักด้านล่างคือหน้าที่ใช้บ่อยที่สุดสำหรับ operator ในการดูสถานะระบบ, cache, cleanup, และ runtime settings</p>
+
+  <table>
+    <tr>
+      <td width="50%">
+        <img src="docs/screenshots/login.png" alt="Control plane login screen" width="100%">
+        <p><strong>Login</strong><br>หน้าเข้าสู่ระบบสำหรับ operator พร้อมมุมมองรวมของ cache health, cleanup และ GC</p>
+      </td>
+      <td width="50%">
+        <img src="docs/screenshots/dashboard-overview.png" alt="System dashboard" width="100%">
+        <p><strong>Dashboard</strong><br>ภาพรวมระบบสำหรับเช็ก health, storage pressure, fallback state และงานที่ต้องตัดสินใจทันที</p>
+      </td>
+    </tr>
+    <tr>
+      <td width="50%">
+        <img src="docs/screenshots/artifact-catalog.png" alt="Artifact catalog" width="100%">
+        <p><strong>Artifact Catalog</strong><br>ค้นหา repo, ดู digest แบบเต็ม, pin/protect, และเช็กสถานะของ cached images จากจอเดียว</p>
+      </td>
+      <td width="50%">
+        <img src="docs/screenshots/cleanup-and-gc.png" alt="Cleanup workflow" width="100%">
+        <p><strong>Cleanup Workflow</strong><br>ดู candidate, threshold ปัจจุบัน, และประวัติ cleanup เพื่อ reclaim storage อย่างปลอดภัย</p>
+      </td>
+    </tr>
+    <tr>
+      <td width="50%">
+        <img src="docs/screenshots/runtime-settings.png" alt="Runtime settings page" width="100%">
+        <p><strong>Runtime Settings</strong><br>สรุป config runtime, cleanup policy, fallback behavior, retention, และ path สำคัญทั้งหมด</p>
+      </td>
+      <td width="50%"></td>
+    </tr>
+  </table>
+</details>
 
 <details>
-  <summary><strong>Complete Control Plane Preview</strong></summary>
+  <summary><strong>Open Full Screenshot Gallery</strong></summary>
 
   <table>
     <tr>
