@@ -140,6 +140,8 @@ sudo ./install.sh --lan --auto
 - Admin user: `admin`
 - Admin password: installer จะพิมพ์ให้ใน terminal ตอนติดตั้ง
 
+ถ้า installer เจอ `metadata` เดิมอยู่แล้ว มันจะไม่เปลี่ยนบัญชี admin ให้ และจะให้ใช้ username/password เดิมต่อ
+
 ถ้าคุณมี reverse proxy / HTTPS อยู่แล้ว และอยากให้ control UI อยู่หลัง proxy ตั้งแต่แรก:
 
 ```bash
@@ -415,6 +417,8 @@ quay.io/pterodactyl/yolks:java_8
 - bootstrap password
 
 ถ้ากด Enter ตอน password ระบบจะ generate password ให้ และบังคับเปลี่ยนรหัสหลัง login ครั้งแรก
+
+ถ้าในเครื่องมี `metadata/registry_meta.db` อยู่แล้ว installer จะถือว่าเป็นระบบเดิม และจะไม่ reset บัญชี admin ให้อัตโนมัติ
 
 จุดเข้าใช้งานหลัก:
 

@@ -19,6 +19,7 @@ GENERATED_PASSWORD="false"
 FORCE_PASSWORD_CHANGE="false"
 BOOTSTRAP_USERNAME="admin"
 BOOTSTRAP_PASSWORD=""
+EXISTING_METADATA="false"
 
 if [[ "${EUID}" -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
@@ -683,6 +684,7 @@ prepare_runtime() {
 bootstrap_credentials_if_needed() {
   FIRST_BOOTSTRAP="false"
   GENERATED_PASSWORD="false"
+  EXISTING_METADATA="false"
   FORCE_PASSWORD_CHANGE="$(read_env_value CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE)"
   BOOTSTRAP_USERNAME="$(read_env_value CONTROL_BOOTSTRAP_USERNAME)"
   BOOTSTRAP_PASSWORD="$(read_env_value CONTROL_BOOTSTRAP_PASSWORD)"
@@ -694,6 +696,7 @@ bootstrap_credentials_if_needed() {
     set_env_value CONTROL_BOOTSTRAP_PASSWORD "$BOOTSTRAP_PASSWORD"
     set_env_value CONTROL_BOOTSTRAP_FORCE_PASSWORD_CHANGE "$FORCE_PASSWORD_CHANGE"
   else
+    EXISTING_METADATA="true"
     log "Existing metadata database found, keeping current admin account"
   fi
 }
@@ -800,6 +803,13 @@ First login password:
   The password you entered during installation.
 EOF
     fi
+  elif [[ "$EXISTING_METADATA" == "true" ]]; then
+    cat <<EOF
+
+Existing admin account:
+  Existing metadata was found, so the installer did not change the current login.
+  Sign in with the username and password you were already using before this install.
+EOF
   fi
 
   if [[ "$healthy" != "true" ]]; then
@@ -812,6 +822,17 @@ Warning:
     sudo ${COMPOSE_COMMAND_LABEL} logs -f control
 EOF
   fi
+
+  cat <<EOF
+
+Health status:
+  $( [[ "$healthy" == "true" ]] && printf '%s' "control service is responding" || printf '%s' "control service is still starting or needs attention" )
+
+Quick checks:
+  curl -fsS http://127.0.0.1:${control_port}/healthz
+  curl -I ${control_url}
+  docker system info --format '{{json .RegistryConfig.Mirrors}}'
+EOF
 
   cat <<EOF
 
